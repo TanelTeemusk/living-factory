@@ -27,9 +27,9 @@ var resource_colors: Dictionary = {
 }
 
 # === CONSTANTS ===
-const EXTRACT_INTERVAL: float = 2.0   # seconds between extractor producing one item
+const EXTRACT_INTERVAL: float = 1.5   # seconds between extractor producing one item
 const PACKET_TRAVEL_TIME: float = 0.8 # seconds to cross one segment
-const MIN_ITEM_GAP: float = 0.15      # minimum progress gap between items on same belt
+const MIN_ITEM_GAP: float = 0.5       # minimum progress gap — limits belt to ~2 items max
 
 # === GLOBAL RESOURCE TOTALS ===
 var total_sugar: float = 0.0
@@ -217,59 +217,49 @@ func _unlock_around(hex_pos: Vector2i) -> void:
 # ============================================================
 # === NERVE NETWORK — roads never change once built ===
 func _rebuild_nerves() -> void:
-	# BFS to get distances
-	var distances: Dictionary = {}
+	# BFS from base. Parent is assigned at discovery time — the cell that
+	# first reaches a neighbor becomes its parent. This guarantees:
+	# - Parent is always exactly one hop closer to base
+	# - Direction is always away from base (outward) toward leaves
+	# - No second-pass ambiguity or tiebreaking needed
+	# - Extractors are never used as parents (dead-ends)
+	#
+	# Roads never change: we skip cells that already have a nerve_parent.
+
+	var visited: Dictionary = {}
 	var queue: Array[Vector2i] = [base_position]
-	distances[base_position] = 0
+	visited[base_position] = true
+
 	while queue.size() > 0:
 		var current: Vector2i = queue.pop_front()
 		for dir in HEX_DIRECTIONS:
 			var nb: Vector2i = current + dir
-			if placed_cells.has(nb) and not distances.has(nb):
-				distances[nb] = distances[current] + 1
+			if not placed_cells.has(nb):
+				continue
+			if visited.has(nb):
+				continue
+			visited[nb] = true
+
+			# Extractors are dead-ends — they get a parent (their one outlet)
+			# but they can never BE a parent for anyone else.
+			# So: assign nb's parent = current, but don't expand from extractors.
+			if not nerve_parent.has(nb):
+				# Only assign if current is not an extractor
+				# (extractor can't be a relay/parent)
+				if placed_cells.get(current, CellType.NONE) != CellType.EXTRACTOR:
+					nerve_parent[nb] = current
+
+			# Don't BFS through extractors — they're leaves
+			if placed_cells.get(nb, CellType.NONE) != CellType.EXTRACTOR:
 				queue.append(nb)
 
-	# Only assign parent to cells that don't have one yet
-	for cell_pos in placed_cells:
-		if cell_pos == base_position:
-			continue
-		if nerve_parent.has(cell_pos):
-			continue  # Road already set — never touch it
-		if not distances.has(cell_pos):
-			continue
-
-		var my_dist: int = distances[cell_pos]
-		var best: Vector2i = Vector2i(-9999, -9999)
-		var best_dist: int = 9999
-		var best_has_road: bool = false
-		for dir in HEX_DIRECTIONS:
-			var nb: Vector2i = cell_pos + dir
-			if not distances.has(nb):
-				continue
-			var nd: int = distances[nb]
-			if nd >= my_dist:
-				continue  # Must be closer to base
-			var has_road: bool = nb == base_position or nerve_parent.has(nb)
-			# Prefer: lower dist, then has_road, then coord tiebreak
-			var better: bool = nd < best_dist or \
-				(nd == best_dist and has_road and not best_has_road) or \
-				(nd == best_dist and has_road == best_has_road and \
-				 (nb.x < best.x or (nb.x == best.x and nb.y < best.y)))
-			if better:
-				best_dist = nd
-				best = nb
-				best_has_road = has_road
-
-		if best != Vector2i(-9999, -9999):
-			nerve_parent[cell_pos] = best
-
-	# Rebuild rendering list
+	# Rebuild rendering list from nerve_parent
 	nerve_connections.clear()
 	for cell_pos in nerve_parent:
 		if placed_cells.has(cell_pos):
 			nerve_connections.append([cell_pos, nerve_parent[cell_pos]])
 
-	# Drop packets on removed edges
+	# Drop packets on edges that no longer exist
 	packets = packets.filter(func(p): return \
 		placed_cells.has(p.from) and placed_cells.has(p.to) and \
 		nerve_parent.has(p.from) and nerve_parent[p.from] == p.to)
@@ -378,6 +368,12 @@ func advance_packets(delta: float) -> void:
 			resources_updated.emit()
 			# drop packet
 
+		elif dest_type == CellType.EXTRACTOR:
+			# Extractors never receive items — hold packet at end of segment forever
+			# (this shouldn't happen if _rebuild_nerves is correct, but safety net)
+			packet.progress = 1.0
+			remaining.append(packet)
+
 		elif dest_type == CellType.GROWTH and nerve_parent.has(to_pos):
 			# Growth node = pure relay. Pass through to next belt immediately.
 			var next_hop: Vector2i = nerve_parent[to_pos]
@@ -394,7 +390,7 @@ func advance_packets(delta: float) -> void:
 				remaining.append(packet)
 
 		else:
-			# Extractor or unknown — shouldn't receive items, drop
+			# Unknown/disconnected — drop
 			pass
 
 	packets = remaining
