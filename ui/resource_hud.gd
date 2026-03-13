@@ -48,9 +48,9 @@ func _create_label(name: String, color: Color) -> Label:
 	return label
 
 func _on_resources_updated() -> void:
-	sugar_label.text = "🍬 %.1f" % GameState.sugar
-	minerals_label.text = "💎 %.0f" % GameState.minerals
-	energy_label.text = "⚡ %.1f" % GameState.energy
+	sugar_label.text = "🍬 %.1f" % GameState.total_sugar
+	minerals_label.text = "💎 %.0f" % GameState.total_minerals
+	energy_label.text = "⚡ %.1f" % GameState.total_energy
 
 func _on_health_changed(_new_health: float = 0.0) -> void:
 	var health_percent := GameState.organism_health * 100.0

@@ -5,8 +5,8 @@ extends Node2D
 # Hex geometry constants
 const HEX_SIZE: float = 32.0  # Outer radius, pointy-top
 const HEX_HEIGHT_OFFSET: float = 8.0  # 3D depth for tile top face
-const CELL_HEIGHT_OFFSET: float = 20.0  # Additional height for placed cells
-const CELL_SIZE_RATIO: float = 0.85  # Cells slightly smaller than tiles
+const CELL_HEIGHT_OFFSET: float = 0.0  # Cells sit flush on the tile surface
+const CELL_SIZE_RATIO: float = 0.72  # Cells nested inside tile border
 
 # Tile colors by type (looked up dynamically since enum isn't available at const time)
 var TILE_COLORS: Dictionary = {}
@@ -46,8 +46,8 @@ func _ready() -> void:
 	rng.seed = 42
 	for i in range(STAR_COUNT):
 		var pos := Vector2(
-			rng.randf_range(-800, 800),
-			rng.randf_range(-600, 600)
+			rng.randf_range(-1800, 1800),
+			rng.randf_range(-1800, 1800)
 		)
 		stars.append(pos)
 		star_alphas.append(rng.randf_range(0.15, 0.5))
@@ -57,6 +57,7 @@ func _ready() -> void:
 	GameState.cell_removed.connect(func(_a): queue_redraw())
 	GameState.tiles_unlocked.connect(func(_a): queue_redraw())
 	GameState.nerves_updated.connect(func(): queue_redraw())
+	GameState.packets_updated.connect(func(): queue_redraw())
 
 func _process(delta: float) -> void:
 	pulse_time += delta
@@ -67,6 +68,7 @@ func _draw() -> void:
 	_draw_hex_tiles()
 	_draw_nerve_connections()
 	_draw_placed_cells()
+	_draw_packets()
 	_draw_hover()
 
 # === BACKGROUND ===
@@ -125,6 +127,10 @@ func _draw_placed_cells() -> void:
 		if cell_type == GameState.CellType.NONE:
 			continue
 
+		if cell_type == GameState.CellType.GROWTH:
+			_draw_growth_node(cell_pos)
+			continue
+
 		var center := GameState.hex_to_pixel(cell_pos)
 		var raised_center := center - Vector2(0, CELL_HEIGHT_OFFSET)
 		var cell_size := HEX_SIZE * CELL_SIZE_RATIO
@@ -165,18 +171,95 @@ func _draw_placed_cells() -> void:
 			var text_pos := raised_center + Vector2(-text_size.x / 2.0, text_size.y / 4.0)
 			draw_string(font, text_pos, label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, Color.WHITE)
 
+# === GROWTH NODE (road/junction — drawn as node + spokes, not a filled hex) ===
+func _draw_growth_node(cell_pos: Vector2i) -> void:
+	var center := GameState.hex_to_pixel(cell_pos)
+	var raised := center - Vector2(0, CELL_HEIGHT_OFFSET)
+	var color: Color = GameState.cell_colors[GameState.CellType.GROWTH]
+	var pulse := sin(pulse_time * 2.0) * 0.15 + 0.85
+
+	# Draw spokes to each nerve neighbor
+	var neighbors := GameState.get_nerve_neighbors(cell_pos)
+	for nb in neighbors:
+		var nb_pixel := GameState.hex_to_pixel(nb) - Vector2(0, CELL_HEIGHT_OFFSET)
+		var spoke_color := color
+		spoke_color.a = 0.5 * pulse
+		draw_line(raised, nb_pixel, spoke_color, 2.0)
+
+	# Outer glow ring
+	var glow := color
+	glow.a = 0.2 * pulse
+	draw_circle(raised, 10.0, glow)
+
+	# Inner filled node circle
+	var node_color := color
+	node_color.a = pulse
+	draw_circle(raised, 5.5, node_color)
+
+	# Thin outline ring
+	# (approximate with a small polygon)
+	var ring_pts: Array[Vector2] = []
+	for i in range(12):
+		var a := i * TAU / 12.0
+		ring_pts.append(raised + Vector2(cos(a), sin(a)) * 7.5)
+	for i: int in range(12):
+		draw_line(ring_pts[i], ring_pts[(i + 1) % 12], Color(color.r, color.g, color.b, 0.6), 1.0)
+
 # === NERVE CONNECTIONS ===
 func _draw_nerve_connections() -> void:
+	# Build set of active nerve edges (have packets on them)
+	var active_edges: Dictionary = {}
+	for packet in GameState.packets:
+		var key := _edge_key(packet.from, packet.to)
+		active_edges[key] = true
+
 	for connection in GameState.nerve_connections:
 		var from_pos: Vector2i = connection[0]
 		var to_pos: Vector2i = connection[1]
-		var efficiency := GameState.get_nerve_efficiency(from_pos)
-		var line_color := _efficiency_color(efficiency)
-		line_color.a = NERVE_LINE_ALPHA
-
 		var from_pixel := GameState.hex_to_pixel(from_pos) - Vector2(0, CELL_HEIGHT_OFFSET * 0.5)
 		var to_pixel := GameState.hex_to_pixel(to_pos) - Vector2(0, CELL_HEIGHT_OFFSET * 0.5)
-		draw_line(from_pixel, to_pixel, line_color, NERVE_LINE_WIDTH)
+
+		var is_active: bool = active_edges.has(_edge_key(from_pos, to_pos))
+		var efficiency := GameState.get_nerve_efficiency(from_pos)
+
+		# Base nerve line (dim vein)
+		var base_color := _efficiency_color(efficiency)
+		base_color.a = 0.25 if not is_active else 0.45
+		draw_line(from_pixel, to_pixel, base_color, NERVE_LINE_WIDTH)
+
+		# Active glow — wider, brighter overlay that pulses
+		if is_active:
+			var glow_alpha := (sin(pulse_time * 6.0) * 0.15 + 0.35)
+			var glow_color := base_color
+			glow_color.a = glow_alpha
+			draw_line(from_pixel, to_pixel, glow_color, NERVE_LINE_WIDTH + 3.0)
+
+# === PACKETS ===
+func _draw_packets() -> void:
+	for packet in GameState.packets:
+		var from_pos: Vector2i = packet.from
+		var to_pos: Vector2i = packet.to
+		var progress: float = packet.progress
+		var rt: int = packet.resource
+
+		var from_pixel := GameState.hex_to_pixel(from_pos) - Vector2(0, CELL_HEIGHT_OFFSET * 0.5)
+		var to_pixel   := GameState.hex_to_pixel(to_pos)   - Vector2(0, CELL_HEIGHT_OFFSET * 0.5)
+
+		var pos := from_pixel.lerp(to_pixel, progress)
+		var color: Color = GameState.resource_colors.get(rt, Color.WHITE)
+
+		# Outer glow
+		var glow := color
+		glow.a = 0.3
+		draw_circle(pos, 6.0, glow)
+		# Core dot
+		draw_circle(pos, 3.5, color)
+
+func _edge_key(a: Vector2i, b: Vector2i) -> String:
+	# Canonical key regardless of direction
+	if a.x < b.x or (a.x == b.x and a.y < b.y):
+		return "%d,%d>%d,%d" % [a.x, a.y, b.x, b.y]
+	return "%d,%d>%d,%d" % [b.x, b.y, a.x, a.y]
 
 # === HOVER GHOST ===
 func _draw_hover() -> void:

@@ -43,16 +43,7 @@ func _create_building_button(parent: HBoxContainer, cell_type: GameState.CellTyp
 	button.text = name
 	button.custom_minimum_size = Vector2(100, 40)
 
-	# Add cost info if available
-	if cell_type in GameState.cell_costs:
-		var cost = GameState.cell_costs[cell_type]
-		var cost_text = ""
-		if "energy" in cost and cost["energy"] > 0:
-			cost_text += "⚡%.0f " % cost["energy"]
-		if "minerals" in cost and cost["minerals"] > 0:
-			cost_text += "💎%.0f" % cost["minerals"]
-		if cost_text:
-			button.text = name + "\n" + cost_text
+	# TODO: show costs here once economy is re-enabled
 
 	button.pressed.connect(func() -> void:
 		GameState.select_cell(cell_type)

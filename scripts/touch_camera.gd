@@ -14,8 +14,9 @@ var last_drag_position: Vector2 = Vector2.ZERO
 
 func _ready() -> void:
 	global_position = Vector2.ZERO
-	zoom = Vector2.ONE
-	target_zoom = 1.0
+	# Start zoomed in enough to see the base area clearly, with some world context
+	target_zoom = 0.9
+	zoom = Vector2(target_zoom, target_zoom)
 
 func _input(event: InputEvent) -> void:
 	var viewport_size = get_viewport_rect().size
