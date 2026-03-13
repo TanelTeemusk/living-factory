@@ -13,7 +13,6 @@ func _ready() -> void:
 func _on_slow_tick() -> void:
 	GameState.process_tick()
 
-# Fast tick: every frame — advance packet positions for smooth animation
+# Every frame — extractor timers, belt movement, delivery
 func _process(delta: float) -> void:
-	if GameState.packets.size() > 0:
-		GameState.advance_packets(delta)
+	GameState.advance_packets(delta)

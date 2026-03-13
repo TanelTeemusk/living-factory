@@ -17,7 +17,6 @@ func _ready() -> void:
 
 	# Create building buttons
 	_create_building_button(hbox, GameState.CellType.EXTRACTOR, "Extractor")
-	_create_building_button(hbox, GameState.CellType.ENERGY, "Energy")
 	_create_building_button(hbox, GameState.CellType.GROWTH, "Growth")
 
 	# Add separator
@@ -46,7 +45,10 @@ func _create_building_button(parent: HBoxContainer, cell_type: GameState.CellTyp
 	# TODO: show costs here once economy is re-enabled
 
 	button.pressed.connect(func() -> void:
-		GameState.select_cell(cell_type)
+		if GameState.selected_cell == cell_type:
+			GameState.clear_selection()
+		else:
+			GameState.select_cell(cell_type)
 	)
 
 	parent.add_child(button)
@@ -58,7 +60,10 @@ func _create_demolish_button(parent: HBoxContainer) -> void:
 	button.text = "Demolish"
 	button.custom_minimum_size = Vector2(100, 40)
 	button.pressed.connect(func() -> void:
-		GameState.toggle_demolish()
+		if GameState.demolish_mode:
+			GameState.clear_selection()
+		else:
+			GameState.toggle_demolish()
 	)
 
 	parent.add_child(button)
@@ -92,7 +97,7 @@ func _update_button_style(button: Button, cell_type: GameState.CellType) -> void
 func _on_selection_changed(cell_type: GameState.CellType) -> void:
 	active_cell_type = cell_type
 
-	for type in [GameState.CellType.EXTRACTOR, GameState.CellType.ENERGY, GameState.CellType.GROWTH]:
+	for type in [GameState.CellType.EXTRACTOR, GameState.CellType.GROWTH]:
 		if type in buttons:
 			_update_button_style(buttons[type], type)
 

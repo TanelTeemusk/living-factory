@@ -3,76 +3,53 @@ extends Node
 ## Global game state — Living Factory biological sim
 
 # === ENUMS ===
-enum CellType { NONE, BASE, EXTRACTOR, ENERGY, GROWTH }
+enum CellType { NONE, BASE, EXTRACTOR, GROWTH }
 enum TileType { LOCKED, EMPTY, SUGAR_FIELD, MINERAL_FIELD }
-enum ResourceType { SUGAR, MINERAL, ENERGY }
+enum ResourceType { SUGAR, MINERAL }
 
 # === CELL PROPERTIES ===
 var cell_names: Dictionary = {
 	CellType.BASE:      "Base",
 	CellType.EXTRACTOR: "Extractor",
-	CellType.ENERGY:    "Energy Cell",
 	CellType.GROWTH:    "Growth Node",
 }
 
 var cell_colors: Dictionary = {
-	CellType.BASE:      Color(0.9, 0.85, 0.3),
-	CellType.EXTRACTOR: Color(0.3, 0.75, 0.4),
-	CellType.ENERGY:    Color(0.3, 0.5,  1.0),
-	CellType.GROWTH:    Color(0.8, 0.3,  0.7),
+	CellType.BASE:      Color(0.9,  0.85, 0.3),
+	CellType.EXTRACTOR: Color(0.3,  0.75, 0.4),
+	CellType.GROWTH:    Color(0.8,  0.3,  0.7),
 }
-
-# Which resources each cell type accepts into its buffer
-var cell_accepts: Dictionary = {
-	CellType.BASE:      [ResourceType.SUGAR, ResourceType.MINERAL, ResourceType.ENERGY],
-	CellType.EXTRACTOR: [],
-	CellType.ENERGY:    [ResourceType.SUGAR],
-	CellType.GROWTH:    [ResourceType.ENERGY, ResourceType.MINERAL],
-}
-
-# Which resources each cell type produces per tick
-var cell_produces: Dictionary = {
-	CellType.BASE:      [],
-	CellType.EXTRACTOR: [],   # Determined at tick time by tile type
-	CellType.ENERGY:    [ResourceType.ENERGY],
-	CellType.GROWTH:    [],
-}
-
-# Buffer capacity per resource slot (per cell)
-const BUFFER_CAPACITY: float = 20.0
-# Amount produced per extractor per tick
-const EXTRACT_AMOUNT: float = 3.0
-# Amount energy cell converts per tick (sugar in → energy out)
-const ENERGY_CONVERT_AMOUNT: float = 4.0
-# Packet size — how much resource per packet
-const PACKET_SIZE: float = 1.0
-# Packet travel time in seconds
-const PACKET_TRAVEL_TIME: float = 0.8
 
 # Resource display colors
 var resource_colors: Dictionary = {
-	ResourceType.SUGAR:   Color(0.95, 0.85, 0.2),   # Yellow
-	ResourceType.MINERAL: Color(0.4,  0.6,  1.0),    # Blue
-	ResourceType.ENERGY:  Color(0.2,  1.0,  0.6),    # Cyan-green
+	ResourceType.SUGAR:   Color(0.9,  0.95, 1.0),
+	ResourceType.MINERAL: Color(0.3,  0.5,  1.0),
 }
 
-# === GLOBAL RESOURCE TOTALS (tracked for HUD) ===
+# === CONSTANTS ===
+const EXTRACT_INTERVAL: float = 2.0   # seconds between extractor producing one item
+const PACKET_TRAVEL_TIME: float = 0.8 # seconds to cross one segment
+const MIN_ITEM_GAP: float = 0.15      # minimum progress gap between items on same belt
+
+# === GLOBAL RESOURCE TOTALS ===
 var total_sugar: float = 0.0
 var total_minerals: float = 0.0
-var total_energy: float = 0.0
 var organism_health: float = 1.0
 
 # === GRID STATE ===
 var tile_map: Dictionary = {}
-var placed_cells: Dictionary = {}      # Vector2i -> CellType
-var nerve_connections: Array = []      # Array of [Vector2i, Vector2i]
+var placed_cells: Dictionary = {}
+var nerve_connections: Array = []
+var nerve_parent: Dictionary = {}
 var base_position: Vector2i = Vector2i.ZERO
 
-# Cell buffers: Dictionary[Vector2i, Dictionary[ResourceType, float]]
-var cell_buffers: Dictionary = {}
+# Extractor production timers: Vector2i -> float (time until next item)
+var extractor_timers: Dictionary = {}
 
 # === PACKETS ===
-# Each packet: { from: Vector2i, to: Vector2i, resource: ResourceType, amount: float, progress: float }
+# { from: Vector2i, to: Vector2i, resource: int, progress: float }
+# progress: 0.0=at from, 1.0=at to
+# Items live on belt segments. At progress=1.0 they wait to enter next segment.
 var packets: Array = []
 
 # === UI STATE ===
@@ -138,7 +115,6 @@ func _init_map() -> void:
 func _place_base(pos: Vector2i) -> void:
 	placed_cells[pos] = CellType.BASE
 	base_position = pos
-	_init_cell_buffer(pos)
 
 # ============================================================
 # === SELECTION ===
@@ -173,7 +149,6 @@ func can_place_cell(hex_pos: Vector2i, type: CellType) -> bool:
 		var tt: int = tile_map[hex_pos]
 		if tt != TileType.SUGAR_FIELD and tt != TileType.MINERAL_FIELD:
 			return false
-	# Must be adjacent to at least one existing cell
 	for dir in HEX_DIRECTIONS:
 		if placed_cells.has(hex_pos + dir):
 			return true
@@ -183,7 +158,8 @@ func place_cell(hex_pos: Vector2i, type: CellType) -> bool:
 	if not can_place_cell(hex_pos, type):
 		return false
 	placed_cells[hex_pos] = type
-	_init_cell_buffer(hex_pos)
+	if type == CellType.EXTRACTOR:
+		extractor_timers[hex_pos] = EXTRACT_INTERVAL
 	_rebuild_nerves()
 	cell_placed.emit(hex_pos, type)
 	resources_updated.emit()
@@ -197,18 +173,12 @@ func remove_cell(hex_pos: Vector2i) -> bool:
 	if placed_cells[hex_pos] == CellType.BASE:
 		return false
 	placed_cells.erase(hex_pos)
-	cell_buffers.erase(hex_pos)
-	# Remove packets going to/from this cell
+	extractor_timers.erase(hex_pos)
+	nerve_parent.erase(hex_pos)
 	packets = packets.filter(func(p): return p.from != hex_pos and p.to != hex_pos)
 	_rebuild_nerves()
 	cell_removed.emit(hex_pos)
 	return true
-
-func _init_cell_buffer(hex_pos: Vector2i) -> void:
-	var buf: Dictionary = {}
-	for rt in ResourceType.values():
-		buf[rt] = 0.0
-	cell_buffers[hex_pos] = buf
 
 # ============================================================
 # === GROWTH / EXPANSION ===
@@ -245,13 +215,12 @@ func _unlock_around(hex_pos: Vector2i) -> void:
 		tiles_unlocked.emit(unlocked)
 
 # ============================================================
-# === NERVE NETWORK ===
+# === NERVE NETWORK — roads never change once built ===
 func _rebuild_nerves() -> void:
-	nerve_connections.clear()
+	# BFS to get distances
 	var distances: Dictionary = {}
 	var queue: Array[Vector2i] = [base_position]
 	distances[base_position] = 0
-
 	while queue.size() > 0:
 		var current: Vector2i = queue.pop_front()
 		for dir in HEX_DIRECTIONS:
@@ -260,185 +229,183 @@ func _rebuild_nerves() -> void:
 				distances[nb] = distances[current] + 1
 				queue.append(nb)
 
+	# Only assign parent to cells that don't have one yet
 	for cell_pos in placed_cells:
 		if cell_pos == base_position:
 			continue
+		if nerve_parent.has(cell_pos):
+			continue  # Road already set — never touch it
 		if not distances.has(cell_pos):
 			continue
-		var best: Vector2i = cell_pos
+
+		var my_dist: int = distances[cell_pos]
+		var best: Vector2i = Vector2i(-9999, -9999)
 		var best_dist: int = 9999
+		var best_has_road: bool = false
 		for dir in HEX_DIRECTIONS:
 			var nb: Vector2i = cell_pos + dir
-			if distances.has(nb) and distances[nb] < best_dist:
-				best_dist = distances[nb]
+			if not distances.has(nb):
+				continue
+			var nd: int = distances[nb]
+			if nd >= my_dist:
+				continue  # Must be closer to base
+			var has_road: bool = nb == base_position or nerve_parent.has(nb)
+			# Prefer: lower dist, then has_road, then coord tiebreak
+			var better: bool = nd < best_dist or \
+				(nd == best_dist and has_road and not best_has_road) or \
+				(nd == best_dist and has_road == best_has_road and \
+				 (nb.x < best.x or (nb.x == best.x and nb.y < best.y)))
+			if better:
+				best_dist = nd
 				best = nb
-		if best != cell_pos:
-			nerve_connections.append([cell_pos, best])
+				best_has_road = has_road
+
+		if best != Vector2i(-9999, -9999):
+			nerve_parent[cell_pos] = best
+
+	# Rebuild rendering list
+	nerve_connections.clear()
+	for cell_pos in nerve_parent:
+		if placed_cells.has(cell_pos):
+			nerve_connections.append([cell_pos, nerve_parent[cell_pos]])
+
+	# Drop packets on removed edges
+	packets = packets.filter(func(p): return \
+		placed_cells.has(p.from) and placed_cells.has(p.to) and \
+		nerve_parent.has(p.from) and nerve_parent[p.from] == p.to)
 
 	nerves_updated.emit()
 
-func get_nerve_efficiency(hex_pos: Vector2i) -> float:
-	var dist := _get_network_distance(hex_pos)
-	if dist < 0:
-		return 0.0
-	return clampf(1.0 - dist * 0.08, 0.2, 1.0)
+# ============================================================
+# === BELT HELPERS ===
 
-func _get_network_distance(hex_pos: Vector2i) -> int:
-	if hex_pos == base_position:
-		return 0
-	var visited: Dictionary = {}
-	var queue: Array = [[base_position, 0]]
-	visited[base_position] = true
-	while queue.size() > 0:
-		var item: Array = queue.pop_front()
-		var current: Vector2i = item[0]
-		var dist: int = item[1]
-		for dir in HEX_DIRECTIONS:
-			var nb: Vector2i = current + dir
-			if nb == hex_pos:
-				return dist + 1
-			if placed_cells.has(nb) and not visited.has(nb):
-				visited[nb] = true
-				queue.append([nb, dist + 1])
-	return -1
+# Lowest progress of any item on this directed edge (-1.0 if belt empty).
+# This is the item closest to the entry point (progress=0) — the "back of the queue".
+# A new item can only enter if this back item has moved far enough away from 0.
+func _belt_back(from_pos: Vector2i, to_pos: Vector2i) -> float:
+	var back: float = 2.0  # sentinel: higher than any real progress
+	for p in packets:
+		if p.from == from_pos and p.to == to_pos:
+			if p.progress < back:
+				back = p.progress
+	if back > 1.0:
+		return -1.0  # empty
+	return back
 
-# Returns the set of nerve neighbors for a cell (cells connected by a nerve edge)
-func get_nerve_neighbors(hex_pos: Vector2i) -> Array[Vector2i]:
-	var result: Array[Vector2i] = []
-	for conn in nerve_connections:
-		if conn[0] == hex_pos:
-			result.append(conn[1])
-		elif conn[1] == hex_pos:
-			result.append(conn[0])
-	return result
+# Can a new item enter this belt?
+# Yes if belt is empty, or the rearmost item has moved at least MIN_ITEM_GAP from entry.
+func _belt_accepts_entry(from_pos: Vector2i, to_pos: Vector2i) -> bool:
+	var back: float = _belt_back(from_pos, to_pos)
+	if back < 0.0:
+		return true  # empty belt
+	return back >= MIN_ITEM_GAP
 
 # ============================================================
-# === RESOURCE TICK (1s) ===
-func process_tick() -> void:
-	# 1. Extractors produce into their own buffer
-	for cell_pos in placed_cells:
-		var type: int = placed_cells[cell_pos]
-		match type:
-			CellType.EXTRACTOR:
-				var tile_type: int = tile_map.get(cell_pos, TileType.EMPTY)
-				var rt: int = -1
-				if tile_type == TileType.SUGAR_FIELD:
-					rt = ResourceType.SUGAR
-				elif tile_type == TileType.MINERAL_FIELD:
-					rt = ResourceType.MINERAL
-				if rt >= 0:
-					var buf: Dictionary = cell_buffers[cell_pos]
-					buf[rt] = minf(buf[rt] + EXTRACT_AMOUNT, BUFFER_CAPACITY)
-
-			CellType.ENERGY:
-				# Convert sugar from buffer → energy
-				var buf: Dictionary = cell_buffers[cell_pos]
-				var sugar_in: float = minf(buf[ResourceType.SUGAR], ENERGY_CONVERT_AMOUNT)
-				if sugar_in > 0.0:
-					buf[ResourceType.SUGAR] -= sugar_in
-					buf[ResourceType.ENERGY] = minf(
-						buf[ResourceType.ENERGY] + sugar_in * 2.0,
-						BUFFER_CAPACITY
-					)
-
-	# 2. Route packets outward from each cell
-	_route_packets()
-
-	# 3. Deliver arrived packets (progress >= 1.0)
-	_deliver_packets()
-
-	# 4. Update global totals for HUD
-	_update_totals()
-
-	organism_health = 1.0  # TODO: re-enable drain later
-	resources_updated.emit()
-	health_changed.emit(organism_health)
-
-func _route_packets() -> void:
-	# For each cell, check if it has surplus resources to send out
-	for cell_pos in placed_cells:
-		var buf: Dictionary = cell_buffers[cell_pos]
-		for rt in ResourceType.values():
-			var amount: float = buf.get(rt, 0.0)
-			if amount < PACKET_SIZE:
-				continue
-
-			# Find best neighbor to send to via nerve
-			var target := _find_best_target(cell_pos, rt)
-			if target == cell_pos:
-				continue  # No valid target found
-
-			# Spawn packet
-			buf[rt] -= PACKET_SIZE
-			packets.append({
-				"from": cell_pos,
-				"to": target,
-				"resource": rt,
-				"amount": PACKET_SIZE,
-				"progress": 0.0,
-			})
-
-	packets_updated.emit()
-
-func _find_best_target(from: Vector2i, rt: int) -> Vector2i:
-	var neighbors := get_nerve_neighbors(from)
-	var best: Vector2i = from
-	var best_need: float = -1.0
-
-	for nb in neighbors:
-		if not placed_cells.has(nb):
-			continue
-		var nb_type: int = placed_cells[nb]
-		var accepted: Array = cell_accepts.get(nb_type, [])
-
-		# Does this cell accept this resource?
-		if not rt in accepted:
-			# Try to relay through it toward a cell that does
-			continue
-
-		var nb_buf: Dictionary = cell_buffers[nb]
-		var current_level: float = nb_buf.get(rt, 0.0)
-		var need: float = BUFFER_CAPACITY - current_level
-
-		if need > best_need:
-			best_need = need
-			best = nb
-
-	return best
-
-func _deliver_packets() -> void:
-	var remaining: Array = []
-	for packet in packets:
-		if packet.progress >= 1.0:
-			# Deliver to destination buffer
-			var dest: Vector2i = packet.to
-			if cell_buffers.has(dest):
-				var buf: Dictionary = cell_buffers[dest]
-				var rt: int = packet.resource
-				buf[rt] = minf(buf.get(rt, 0.0) + packet.amount, BUFFER_CAPACITY)
-		else:
-			remaining.append(packet)
-	packets = remaining
-
-# ============================================================
-# === VISUAL TICK (called at ~10fps from ticker) ===
+# === MAIN UPDATE — called every frame from resource_ticker ===
 func advance_packets(delta: float) -> void:
 	var speed: float = 1.0 / PACKET_TRAVEL_TIME
+
+	# --- Step 1: Extractor production ---
+	# Extractors tick their timer and push one item onto their outgoing belt when ready.
+	for cell_pos in extractor_timers.keys():
+		if not placed_cells.has(cell_pos):
+			continue
+		if not nerve_parent.has(cell_pos):
+			continue
+		var parent: Vector2i = nerve_parent[cell_pos]
+		# Only count down if the belt can accept a new item
+		if not _belt_accepts_entry(cell_pos, parent):
+			continue  # belt full — stall extraction (back-pressure)
+		extractor_timers[cell_pos] -= delta
+		if extractor_timers[cell_pos] <= 0.0:
+			extractor_timers[cell_pos] = EXTRACT_INTERVAL
+			var tile_type: int = tile_map.get(cell_pos, TileType.EMPTY)
+			var rt: int = -1
+			if tile_type == TileType.SUGAR_FIELD:
+				rt = ResourceType.SUGAR
+			elif tile_type == TileType.MINERAL_FIELD:
+				rt = ResourceType.MINERAL
+			if rt >= 0:
+				packets.append({
+					"from":     cell_pos,
+					"to":       parent,
+					"resource": rt,
+					"progress": 0.0,
+				})
+
+	# --- Step 2: Move items along their belts ---
+	# Sort front-to-back so leaders advance first, making room for followers.
+	packets.sort_custom(func(a, b): return a.progress > b.progress)
+
+	var remaining: Array = []
+
+	var all_packets: Array = packets.duplicate()  # snapshot before we modify
+
 	for packet in packets:
-		packet.progress = minf(packet.progress + delta * speed, 1.0)
+		var from_pos: Vector2i = packet.from
+		var to_pos: Vector2i   = packet.to
+
+		# Find the closest item ahead on the same belt (search full snapshot)
+		var ahead_progress: float = 1.1  # beyond max so default = no blocker
+		for other in all_packets:
+			if other == packet:
+				continue
+			if other.from == from_pos and other.to == to_pos:
+				if other.progress > packet.progress and other.progress < ahead_progress:
+					ahead_progress = other.progress
+
+		# Can advance up to (ahead - MIN_ITEM_GAP). If no blocker, can go to 1.0.
+		var cap: float
+		if ahead_progress > 1.0:
+			cap = 1.0  # nothing ahead, move freely
+		else:
+			cap = maxf(ahead_progress - MIN_ITEM_GAP, packet.progress)  # don't move backward
+
+		var new_progress: float = minf(packet.progress + delta * speed, cap)
+		packet.progress = new_progress
+
+		if new_progress < 1.0:
+			remaining.append(packet)
+			continue
+
+		# --- Step 3: Item reached end of segment ---
+		var dest_type: int = placed_cells.get(to_pos, CellType.NONE)
+
+		if dest_type == CellType.BASE:
+			# Arrived at base — consume
+			total_sugar    += 1.0 if packet.resource == ResourceType.SUGAR   else 0.0
+			total_minerals += 1.0 if packet.resource == ResourceType.MINERAL else 0.0
+			resources_updated.emit()
+			# drop packet
+
+		elif dest_type == CellType.GROWTH and nerve_parent.has(to_pos):
+			# Growth node = pure relay. Pass through to next belt immediately.
+			var next_hop: Vector2i = nerve_parent[to_pos]
+			if _belt_accepts_entry(to_pos, next_hop):
+				remaining.append({
+					"from":     to_pos,
+					"to":       next_hop,
+					"resource": packet.resource,
+					"progress": 0.0,
+				})
+			else:
+				# Next belt full — wait at end of current segment
+				packet.progress = 1.0
+				remaining.append(packet)
+
+		else:
+			# Extractor or unknown — shouldn't receive items, drop
+			pass
+
+	packets = remaining
 	packets_updated.emit()
 
 # ============================================================
-# === HUD TOTALS ===
-func _update_totals() -> void:
-	total_sugar = 0.0
-	total_minerals = 0.0
-	total_energy = 0.0
-	for cell_pos in cell_buffers:
-		var buf: Dictionary = cell_buffers[cell_pos]
-		total_sugar    += buf.get(ResourceType.SUGAR,   0.0)
-		total_minerals += buf.get(ResourceType.MINERAL, 0.0)
-		total_energy   += buf.get(ResourceType.ENERGY,  0.0)
+# === LEGACY TICK — called by resource_ticker every 1s ===
+# Only updates HUD totals now; production is frame-driven above.
+func process_tick() -> void:
+	organism_health = 1.0
+	health_changed.emit(organism_health)
 
 # ============================================================
 # === HEX MATH ===

@@ -2,7 +2,6 @@ extends HBoxContainer
 
 var sugar_label: Label
 var minerals_label: Label
-var energy_label: Label
 var health_label: Label
 
 func _ready() -> void:
@@ -19,15 +18,13 @@ func _ready() -> void:
 	add_theme_constant_override("separation", 24)
 
 	# Create labels
-	sugar_label = _create_label("Sugar", Color(0.9, 0.85, 0.3))
-	minerals_label = _create_label("Minerals", Color(0.5, 0.6, 0.8))
-	energy_label = _create_label("Energy", Color(0.3, 0.7, 1.0))
+	sugar_label = _create_label("Sugar", Color(0.9, 0.95, 1.0))
+	minerals_label = _create_label("Minerals", Color(0.3, 0.5, 1.0))
 	health_label = _create_label("Health", Color(0.3, 0.9, 0.4))
 
 	# Add to container
 	add_child(sugar_label)
 	add_child(minerals_label)
-	add_child(energy_label)
 	add_child(health_label)
 
 	# Connect to signals
@@ -48,9 +45,8 @@ func _create_label(name: String, color: Color) -> Label:
 	return label
 
 func _on_resources_updated() -> void:
-	sugar_label.text = "🍬 %.1f" % GameState.total_sugar
-	minerals_label.text = "💎 %.0f" % GameState.total_minerals
-	energy_label.text = "⚡ %.1f" % GameState.total_energy
+	sugar_label.text = "Sugar  %d" % int(GameState.total_sugar)
+	minerals_label.text = "Mineral  %d" % int(GameState.total_minerals)
 
 func _on_health_changed(_new_health: float = 0.0) -> void:
 	var health_percent := GameState.organism_health * 100.0

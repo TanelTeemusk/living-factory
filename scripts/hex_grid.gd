@@ -136,9 +136,13 @@ func _draw_placed_cells() -> void:
 		var cell_size := HEX_SIZE * CELL_SIZE_RATIO
 		var color: Color = GameState.cell_colors.get(cell_type, Color.WHITE)
 
-		# Pulse energy cells
-		if cell_type == GameState.CellType.ENERGY:
-			color.a = sin(pulse_time * PULSE_SPEED) * 0.3 + 0.7
+		# Extractor color by underlying resource type
+		if cell_type == GameState.CellType.EXTRACTOR:
+			var tile_type: int = GameState.tile_map.get(cell_pos, GameState.TileType.EMPTY)
+			if tile_type == GameState.TileType.SUGAR_FIELD:
+				color = Color(0.88, 0.95, 1.0)   # Pale blue-white (sugar)
+			elif tile_type == GameState.TileType.MINERAL_FIELD:
+				color = Color(0.25, 0.45, 0.95)  # Deep blue (mineral)
 
 		var vertices := _get_hex_vertices(raised_center, cell_size)
 		var bottom_verts: Array[Vector2] = []
@@ -171,82 +175,28 @@ func _draw_placed_cells() -> void:
 			var text_pos := raised_center + Vector2(-text_size.x / 2.0, text_size.y / 4.0)
 			draw_string(font, text_pos, label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, Color.WHITE)
 
-# === GROWTH NODE (road/junction — drawn as node + spokes, not a filled hex) ===
-func _draw_growth_node(cell_pos: Vector2i) -> void:
-	var center := GameState.hex_to_pixel(cell_pos)
-	var raised := center - Vector2(0, CELL_HEIGHT_OFFSET)
-	var color: Color = GameState.cell_colors[GameState.CellType.GROWTH]
-	var pulse := sin(pulse_time * 2.0) * 0.15 + 0.85
-
-	# Draw spokes to each nerve neighbor
-	var neighbors := GameState.get_nerve_neighbors(cell_pos)
-	for nb in neighbors:
-		var nb_pixel := GameState.hex_to_pixel(nb) - Vector2(0, CELL_HEIGHT_OFFSET)
-		var spoke_color := color
-		spoke_color.a = 0.5 * pulse
-		draw_line(raised, nb_pixel, spoke_color, 2.0)
-
-	# Outer glow ring
-	var glow := color
-	glow.a = 0.2 * pulse
-	draw_circle(raised, 10.0, glow)
-
-	# Inner filled node circle
-	var node_color := color
-	node_color.a = pulse
-	draw_circle(raised, 5.5, node_color)
-
-	# Thin outline ring
-	# (approximate with a small polygon)
-	var ring_pts: Array[Vector2] = []
-	for i in range(12):
-		var a := i * TAU / 12.0
-		ring_pts.append(raised + Vector2(cos(a), sin(a)) * 7.5)
-	for i: int in range(12):
-		draw_line(ring_pts[i], ring_pts[(i + 1) % 12], Color(color.r, color.g, color.b, 0.6), 1.0)
+# === GROWTH NODE (road junction — nerves draw the lines, nothing extra needed) ===
+func _draw_growth_node(_cell_pos: Vector2i) -> void:
+	pass  # Growth nodes are purely visual through nerve connections
 
 # === NERVE CONNECTIONS ===
 func _draw_nerve_connections() -> void:
-	# Build set of active nerve edges (have packets on them)
-	var active_edges: Dictionary = {}
-	for packet in GameState.packets:
-		var key := _edge_key(packet.from, packet.to)
-		active_edges[key] = true
+	const NERVE_COLOR := Color(0.45, 0.55, 0.5, 0.6)
 
 	for connection in GameState.nerve_connections:
 		var from_pos: Vector2i = connection[0]
 		var to_pos: Vector2i = connection[1]
-		var from_pixel := GameState.hex_to_pixel(from_pos) - Vector2(0, CELL_HEIGHT_OFFSET * 0.5)
-		var to_pixel := GameState.hex_to_pixel(to_pos) - Vector2(0, CELL_HEIGHT_OFFSET * 0.5)
-
-		var is_active: bool = active_edges.has(_edge_key(from_pos, to_pos))
-		var efficiency := GameState.get_nerve_efficiency(from_pos)
-
-		# Base nerve line (dim vein)
-		var base_color := _efficiency_color(efficiency)
-		base_color.a = 0.25 if not is_active else 0.45
-		draw_line(from_pixel, to_pixel, base_color, NERVE_LINE_WIDTH)
-
-		# Active glow — wider, brighter overlay that pulses
-		if is_active:
-			var glow_alpha := (sin(pulse_time * 6.0) * 0.15 + 0.35)
-			var glow_color := base_color
-			glow_color.a = glow_alpha
-			draw_line(from_pixel, to_pixel, glow_color, NERVE_LINE_WIDTH + 3.0)
+		var from_pixel := GameState.hex_to_pixel(from_pos)
+		var to_pixel   := GameState.hex_to_pixel(to_pos)
+		draw_line(from_pixel, to_pixel, NERVE_COLOR, NERVE_LINE_WIDTH)
 
 # === PACKETS ===
 func _draw_packets() -> void:
 	for packet in GameState.packets:
-		var from_pos: Vector2i = packet.from
-		var to_pos: Vector2i = packet.to
-		var progress: float = packet.progress
-		var rt: int = packet.resource
-
-		var from_pixel := GameState.hex_to_pixel(from_pos) - Vector2(0, CELL_HEIGHT_OFFSET * 0.5)
-		var to_pixel   := GameState.hex_to_pixel(to_pos)   - Vector2(0, CELL_HEIGHT_OFFSET * 0.5)
-
-		var pos := from_pixel.lerp(to_pixel, progress)
-		var color: Color = GameState.resource_colors.get(rt, Color.WHITE)
+		var from_pixel := GameState.hex_to_pixel(packet.from)
+		var to_pixel   := GameState.hex_to_pixel(packet.to)
+		var pos := from_pixel.lerp(to_pixel, packet.progress)
+		var color: Color = GameState.resource_colors.get(packet.resource, Color.WHITE)
 
 		# Outer glow
 		var glow := color
