@@ -47,10 +47,22 @@ var base_position: Vector2i = Vector2i.ZERO
 var extractor_timers: Dictionary = {}
 
 # === PACKETS ===
-# { from: Vector2i, to: Vector2i, resource: int, progress: float }
+# { from: Vector2i, to: Vector2i, resource: int, progress: float, debug_color: Color }
 # progress: 0.0=at from, 1.0=at to
 # Items live on belt segments. At progress=1.0 they wait to enter next segment.
 var packets: Array = []
+
+# Debug RNG for unique packet colors
+var _debug_rng := RandomNumberGenerator.new()
+
+func _make_packet(from: Vector2i, to: Vector2i, resource: int) -> Dictionary:
+	return {
+		"from": from,
+		"to": to,
+		"resource": resource,
+		"progress": 0.0,
+		"debug_color": Color(_debug_rng.randf(), _debug_rng.randf(), _debug_rng.randf(), 1.0),
+	}
 
 # === UI STATE ===
 var selected_cell: CellType = CellType.NONE
@@ -284,8 +296,14 @@ func _belt_back(from_pos: Vector2i, to_pos: Vector2i) -> float:
 
 # Can a new item enter this belt?
 # Yes if belt is empty, or the rearmost item has moved at least MIN_ITEM_GAP from entry.
-func _belt_accepts_entry(from_pos: Vector2i, to_pos: Vector2i) -> bool:
+# Pass pending_packets to also check items queued this frame but not yet in self.packets.
+func _belt_accepts_entry(from_pos: Vector2i, to_pos: Vector2i, pending: Array = []) -> bool:
 	var back: float = _belt_back(from_pos, to_pos)
+	# Also check items queued this frame (in pending but not yet in packets)
+	for p in pending:
+		if p.from == from_pos and p.to == to_pos:
+			if back < 0.0 or p.progress < back:
+				back = p.progress
 	if back < 0.0:
 		return true  # empty belt
 	return back >= MIN_ITEM_GAP
@@ -295,6 +313,15 @@ func _belt_accepts_entry(from_pos: Vector2i, to_pos: Vector2i) -> bool:
 func advance_packets(delta: float) -> void:
 	var speed: float = 1.0 / PACKET_TRAVEL_TIME
 
+	# remaining accumulates all packets surviving this frame.
+	# Declared early so Step 1 can pass it to _belt_accepts_entry
+	# to prevent two items from entering the same belt in the same frame.
+	var remaining: Array = []
+
+	# Tracks which junction (growth) nodes have already forwarded an item this frame.
+	# Prevents two incoming items from crossing the same junction simultaneously.
+	var junction_used: Dictionary = {}
+
 	# --- Step 1: Extractor production ---
 	# Extractors tick their timer and push one item onto their outgoing belt when ready.
 	for cell_pos in extractor_timers.keys():
@@ -303,8 +330,8 @@ func advance_packets(delta: float) -> void:
 		if not nerve_parent.has(cell_pos):
 			continue
 		var parent: Vector2i = nerve_parent[cell_pos]
-		# Only count down if the belt can accept a new item
-		if not _belt_accepts_entry(cell_pos, parent):
+		# Only count down if the belt can accept a new item (check packets + already-queued this frame)
+		if not _belt_accepts_entry(cell_pos, parent, remaining):
 			continue  # belt full — stall extraction (back-pressure)
 		extractor_timers[cell_pos] -= delta
 		if extractor_timers[cell_pos] <= 0.0:
@@ -316,27 +343,31 @@ func advance_packets(delta: float) -> void:
 			elif tile_type == TileType.MINERAL_FIELD:
 				rt = ResourceType.MINERAL
 			if rt >= 0:
-				packets.append({
-					"from":     cell_pos,
-					"to":       parent,
-					"resource": rt,
-					"progress": 0.0,
-				})
+				remaining.append(_make_packet(cell_pos, parent, rt))
 
-	# --- Step 2: Move items along their belts ---
-	# Sort front-to-back so leaders advance first, making room for followers.
+	# --- Step 2: Pre-claim junctions ---
+	# Each junction slot can be owned by at most one packet per frame.
+	# Ownership is assigned to the packet with the highest progress heading to that junction.
+	# Packets are keyed by identity (their dict reference) so we can check ownership in Step 3.
+	# junction_used: Vector2i -> packet dict (the owner)
 	packets.sort_custom(func(a, b): return a.progress > b.progress)
 
-	var remaining: Array = []
+	for packet in packets:
+		var to_pos: Vector2i = packet.to
+		if placed_cells.get(to_pos, CellType.NONE) == CellType.GROWTH:
+			if not junction_used.has(to_pos):
+				junction_used[to_pos] = packet  # highest-progress packet wins
 
+	# --- Step 3: Move items along their belts ---
+	# Leaders move first (already sorted desc).
 	var all_packets: Array = packets.duplicate()  # snapshot before we modify
 
 	for packet in packets:
 		var from_pos: Vector2i = packet.from
 		var to_pos: Vector2i   = packet.to
 
-		# Find the closest item ahead on the same belt (search full snapshot)
-		var ahead_progress: float = 1.1  # beyond max so default = no blocker
+		# Find the closest item ahead on the same belt
+		var ahead_progress: float = 1.1
 		for other in all_packets:
 			if other == packet:
 				continue
@@ -344,12 +375,33 @@ func advance_packets(delta: float) -> void:
 				if other.progress > packet.progress and other.progress < ahead_progress:
 					ahead_progress = other.progress
 
-		# Can advance up to (ahead - MIN_ITEM_GAP). If no blocker, can go to 1.0.
+		const ENTRY_STOP: float = 1.0 - MIN_ITEM_GAP * 0.5
+
 		var cap: float
-		if ahead_progress > 1.0:
-			cap = 1.0  # nothing ahead, move freely
+		if ahead_progress <= 1.0:
+			# Blocked by item ahead on same belt
+			cap = maxf(ahead_progress - MIN_ITEM_GAP, packet.progress)
 		else:
-			cap = maxf(ahead_progress - MIN_ITEM_GAP, packet.progress)  # don't move backward
+			# Nothing ahead on this belt — check destination
+			var dest_type_peek: int = placed_cells.get(to_pos, CellType.NONE)
+			var next_accepts: bool = false
+			if dest_type_peek == CellType.BASE:
+				next_accepts = true
+			elif dest_type_peek == CellType.EXTRACTOR:
+				next_accepts = false
+			elif dest_type_peek == CellType.GROWTH and nerve_parent.has(to_pos):
+				var next_hop: Vector2i = nerve_parent[to_pos]
+				var is_owner: bool = junction_used.get(to_pos) == packet
+				if is_owner:
+					# Owner moves freely; cap at 1.0 if next belt accepts, else ENTRY_STOP
+					next_accepts = _belt_accepts_entry(to_pos, next_hop, remaining)
+				else:
+					# Not the owner — stop before the junction so the owner has clear passage
+					next_accepts = false
+			if next_accepts:
+				cap = 1.0
+			else:
+				cap = ENTRY_STOP
 
 		var new_progress: float = minf(packet.progress + delta * speed, cap)
 		packet.progress = new_progress
@@ -358,34 +410,28 @@ func advance_packets(delta: float) -> void:
 			remaining.append(packet)
 			continue
 
-		# --- Step 3: Item reached end of segment ---
+		# --- Step 4: Item reached end of segment (progress == 1.0) ---
 		var dest_type: int = placed_cells.get(to_pos, CellType.NONE)
 
 		if dest_type == CellType.BASE:
-			# Arrived at base — consume
 			total_sugar    += 1.0 if packet.resource == ResourceType.SUGAR   else 0.0
 			total_minerals += 1.0 if packet.resource == ResourceType.MINERAL else 0.0
 			resources_updated.emit()
 			# drop packet
 
 		elif dest_type == CellType.EXTRACTOR:
-			# Extractors never receive items — hold packet at end of segment forever
-			# (this shouldn't happen if _rebuild_nerves is correct, but safety net)
+			# Safety net — should never route here
 			packet.progress = 1.0
 			remaining.append(packet)
 
 		elif dest_type == CellType.GROWTH and nerve_parent.has(to_pos):
-			# Growth node = pure relay. Pass through to next belt immediately.
 			var next_hop: Vector2i = nerve_parent[to_pos]
-			if _belt_accepts_entry(to_pos, next_hop):
-				remaining.append({
-					"from":     to_pos,
-					"to":       next_hop,
-					"resource": packet.resource,
-					"progress": 0.0,
-				})
+			if _belt_accepts_entry(to_pos, next_hop, remaining):
+				var forwarded := _make_packet(to_pos, next_hop, packet.resource)
+				forwarded.debug_color = packet.debug_color
+				remaining.append(forwarded)
 			else:
-				# Next belt full — wait at end of current segment
+				# Next belt full — wait
 				packet.progress = 1.0
 				remaining.append(packet)
 

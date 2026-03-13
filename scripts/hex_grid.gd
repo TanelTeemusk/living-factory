@@ -196,7 +196,7 @@ func _draw_packets() -> void:
 		var from_pixel := GameState.hex_to_pixel(packet.from)
 		var to_pixel   := GameState.hex_to_pixel(packet.to)
 		var pos := from_pixel.lerp(to_pixel, packet.progress)
-		var color: Color = GameState.resource_colors.get(packet.resource, Color.WHITE)
+		var color: Color = packet.get("debug_color", GameState.resource_colors.get(packet.resource, Color.WHITE))
 
 		# Outer glow
 		var glow := color
