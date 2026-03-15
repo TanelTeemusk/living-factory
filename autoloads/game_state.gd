@@ -612,13 +612,15 @@ static func hex_distance(a: Vector2i, b: Vector2i) -> int:
 	var ds: int = (-a.x - a.y) - (-b.x - b.y)
 	return (absi(dq) + absi(dr) + absi(ds)) / 2
 
+const SQRT3: float = 1.7320508075688772
+
 static func hex_to_pixel(hex: Vector2i) -> Vector2:
-	var x: float = HEX_SIZE * (sqrt(3.0) * hex.x + sqrt(3.0) / 2.0 * hex.y)
-	var y: float = HEX_SIZE * (3.0 / 2.0 * hex.y)
+	var x: float = HEX_SIZE * (SQRT3 * hex.x + SQRT3 * 0.5 * hex.y)
+	var y: float = HEX_SIZE * 1.5 * hex.y
 	return Vector2(x, y)
 
 static func pixel_to_hex(pixel: Vector2) -> Vector2i:
-	var q: float = (sqrt(3.0) / 3.0 * pixel.x - 1.0 / 3.0 * pixel.y) / HEX_SIZE
+	var q: float = (SQRT3 / 3.0 * pixel.x - 1.0 / 3.0 * pixel.y) / HEX_SIZE
 	var r: float = (2.0 / 3.0 * pixel.y) / HEX_SIZE
 	return _axial_round(q, r)
 

@@ -28,9 +28,6 @@ const UI_SAFE_MARGIN: float = 170.0
 var stars: Array[Vector2] = []
 var star_alphas: Array[float] = []
 
-# Energy cell pulsing
-var pulse_time: float = 0.0
-const PULSE_SPEED: float = 3.0
 
 func _ready() -> void:
 	# Init tile colors (can't use enum in const Dictionary)
@@ -52,42 +49,44 @@ func _ready() -> void:
 		stars.append(pos)
 		star_alphas.append(rng.randf_range(0.15, 0.5))
 
-	# Connect to GameState signals with lambdas to discard args
 	GameState.cell_placed.connect(func(_a, _b): queue_redraw())
 	GameState.cell_removed.connect(func(_a): queue_redraw())
 	GameState.tiles_unlocked.connect(func(_a): queue_redraw())
 	GameState.nerves_updated.connect(func(): queue_redraw())
-	GameState.packets_updated.connect(func(): queue_redraw())
-	GameState.hex_selection_changed.connect(func(_h): queue_redraw())
 	GameState.extractor_rotated.connect(func(_h): queue_redraw())
 	GameState.growth_rotated.connect(func(_h): queue_redraw())
-
-func _process(delta: float) -> void:
-	pulse_time += delta
-	queue_redraw()
 
 func _draw() -> void:
 	_draw_background()
 	_draw_hex_tiles()
 	_draw_nerve_connections()
 	_draw_placed_cells()
-	_draw_packets()
-	_draw_selected_hex()
-	_draw_hover()
+
+func _visible_world_rect() -> Rect2:
+	var vp := get_viewport_rect()
+	var xf := get_canvas_transform().affine_inverse()
+	var tl := xf * vp.position
+	var br := xf * (vp.position + vp.size)
+	var margin := GameState.HEX_SIZE * 2.0
+	return Rect2(tl - Vector2(margin, margin), br - tl + Vector2(margin * 2.0, margin * 2.0))
 
 # === BACKGROUND ===
 func _draw_background() -> void:
-	# Large dark rect in world space
-	draw_rect(Rect2(-2000, -2000, 4000, 4000), BACKGROUND_COLOR)
-	# Stars
+	var wr := _visible_world_rect()
+	draw_rect(wr, BACKGROUND_COLOR)
+	# Stars — only draw ones inside the visible rect
 	for i in range(stars.size()):
-		draw_circle(stars[i], 1.0, Color(1.0, 1.0, 1.0, star_alphas[i]))
+		if wr.has_point(stars[i]):
+			draw_circle(stars[i], 1.0, Color(1.0, 1.0, 1.0, star_alphas[i]))
 
 # === HEX TILES ===
 func _draw_hex_tiles() -> void:
+	var wr := _visible_world_rect()
 	for tile_pos in GameState.tile_map:
-		var tile_type: int = GameState.tile_map[tile_pos]
 		var center := GameState.hex_to_pixel(tile_pos)
+		if not wr.has_point(center):
+			continue
+		var tile_type: int = GameState.tile_map[tile_pos]
 		var color: Color = TILE_COLORS.get(tile_type, Color.GRAY)
 		var vertices := _get_hex_vertices(center, HEX_SIZE)
 
@@ -126,16 +125,19 @@ func _draw_hex_tiles() -> void:
 
 # === PLACED CELLS ===
 func _draw_placed_cells() -> void:
+	var wr := _visible_world_rect()
 	for cell_pos in GameState.placed_cells:
 		var cell_type: int = GameState.placed_cells[cell_pos]
 		if cell_type == GameState.CellType.NONE:
+			continue
+		var center := GameState.hex_to_pixel(cell_pos)
+		if not wr.has_point(center):
 			continue
 
 		if cell_type == GameState.CellType.GROWTH:
 			_draw_growth_node(cell_pos)
 			continue
 
-		var center := GameState.hex_to_pixel(cell_pos)
 		var raised_center := center - Vector2(0, CELL_HEIGHT_OFFSET)
 		var cell_size := HEX_SIZE * CELL_SIZE_RATIO
 		var color: Color = GameState.cell_colors.get(cell_type, Color.WHITE)
@@ -260,73 +262,6 @@ func _draw_nerve_connections() -> void:
 		var base_r := tip - dir * ARROW_SIZE - perp * ARROW_SIZE * 0.55
 		draw_line(tip, base_l, ARROW_COLOR, 1.5)
 		draw_line(tip, base_r, ARROW_COLOR, 1.5)
-
-# === PACKETS ===
-func _draw_packets() -> void:
-	for packet in GameState.packets:
-		var from_pixel := GameState.hex_to_pixel(packet.from)
-		var to_pixel   := GameState.hex_to_pixel(packet.to)
-		var pos := from_pixel.lerp(to_pixel, packet.progress)
-		var color: Color = GameState.resource_colors.get(packet.resource, Color.WHITE)
-
-		# Outer glow
-		var glow := color
-		glow.a = 0.3
-		draw_circle(pos, 6.0, glow)
-		# Core dot
-		draw_circle(pos, 3.5, color)
-
-func _edge_key(a: Vector2i, b: Vector2i) -> String:
-	# Canonical key regardless of direction
-	if a.x < b.x or (a.x == b.x and a.y < b.y):
-		return "%d,%d>%d,%d" % [a.x, a.y, b.x, b.y]
-	return "%d,%d>%d,%d" % [b.x, b.y, a.x, a.y]
-
-# === SELECTED HEX HIGHLIGHT ===
-func _draw_selected_hex() -> void:
-	var hex := GameState.selected_hex
-	if hex == GameState.NO_HEX:
-		return
-	if not GameState.tile_map.has(hex):
-		return
-	var center := GameState.hex_to_pixel(hex)
-	var verts := _get_hex_vertices(center, HEX_SIZE + 3.0)
-	# Animated pulse using pulse_time
-	var alpha := 0.5 + 0.25 * sin(pulse_time * PULSE_SPEED)
-	for i in range(6):
-		draw_line(verts[i], verts[(i + 1) % 6], Color(1.0, 0.85, 0.3, alpha), 2.5)
-
-# === HOVER GHOST ===
-func _draw_hover() -> void:
-	var hovered_hex := GameState.pixel_to_hex(get_global_mouse_position())
-
-	if GameState.demolish_mode:
-		if GameState.placed_cells.has(hovered_hex) and GameState.placed_cells[hovered_hex] != GameState.CellType.BASE:
-			var center := GameState.hex_to_pixel(hovered_hex)
-			var raised := center - Vector2(0, CELL_HEIGHT_OFFSET)
-			var verts := _get_hex_vertices(raised, HEX_SIZE * CELL_SIZE_RATIO)
-			draw_colored_polygon(PackedVector2Array(verts), Color(1, 0, 0, HOVER_OVERLAY_ALPHA))
-		return
-
-	if GameState.selected_cell == GameState.CellType.NONE:
-		return
-	if not GameState.tile_map.has(hovered_hex):
-		return
-	if GameState.placed_cells.has(hovered_hex):
-		return
-
-	var center := GameState.hex_to_pixel(hovered_hex)
-	var raised := center - Vector2(0, CELL_HEIGHT_OFFSET)
-	var verts := _get_hex_vertices(raised, HEX_SIZE * CELL_SIZE_RATIO)
-
-	var can_place := GameState.can_place_cell(hovered_hex, GameState.selected_cell)
-	var ghost_color: Color
-	if can_place:
-		ghost_color = GameState.cell_colors.get(GameState.selected_cell, Color.WHITE)
-		ghost_color.a = GHOST_CELL_ALPHA
-	else:
-		ghost_color = Color(1, 0.2, 0.2, GHOST_CELL_ALPHA)
-	draw_colored_polygon(PackedVector2Array(verts), ghost_color)
 
 # === INPUT ===
 func _unhandled_input(event: InputEvent) -> void:

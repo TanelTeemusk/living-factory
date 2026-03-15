@@ -1,15 +1,19 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=7 format=3]
 
 [ext_resource type="Script" path="res://scripts/touch_camera.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/hex_grid.gd" id="2"]
 [ext_resource type="Script" path="res://scripts/resource_ticker.gd" id="3"]
 [ext_resource type="Script" path="res://ui/resource_hud.gd" id="4"]
 [ext_resource type="Script" path="res://ui/build_toolbar.gd" id="5"]
+[ext_resource type="Script" path="res://scripts/dynamic_layer.gd" id="6"]
 
 [node name="Main" type="Node2D"]
 
 [node name="HexGrid" type="Node2D" parent="."]
 script = ExtResource("2")
+
+[node name="DynamicLayer" type="Node2D" parent="HexGrid"]
+script = ExtResource("6")
 
 [node name="Camera2D" type="Camera2D" parent="."]
 script = ExtResource("1")
