@@ -46,14 +46,17 @@ var base_position: Vector2i = Vector2i.ZERO
 # Extractor production timers: Vector2i -> float (time until next item)
 var extractor_timers: Dictionary = {}
 
+# Extractor outlet overrides: Vector2i -> Vector2i (neighbor chosen by player rotation)
+# If an entry exists here it overrides BFS-assigned nerve_parent for that extractor.
+var extractor_outlet: Dictionary = {}
+
+signal extractor_rotated(hex_pos: Vector2i)
+
 # === PACKETS ===
-# { from: Vector2i, to: Vector2i, resource: int, progress: float, debug_color: Color }
+# { from: Vector2i, to: Vector2i, resource: int, progress: float }
 # progress: 0.0=at from, 1.0=at to
 # Items live on belt segments. At progress=1.0 they wait to enter next segment.
 var packets: Array = []
-
-# Debug RNG for unique packet colors
-var _debug_rng := RandomNumberGenerator.new()
 
 func _make_packet(from: Vector2i, to: Vector2i, resource: int) -> Dictionary:
 	return {
@@ -61,7 +64,6 @@ func _make_packet(from: Vector2i, to: Vector2i, resource: int) -> Dictionary:
 		"to": to,
 		"resource": resource,
 		"progress": 0.0,
-		"debug_color": Color(_debug_rng.randf(), _debug_rng.randf(), _debug_rng.randf(), 1.0),
 	}
 
 # === UI STATE ===
@@ -168,6 +170,33 @@ func deselect_hex() -> void:
 	demolish_mode = false
 	hex_selection_changed.emit(NO_HEX)
 
+# Rotate an extractor's outlet one step clockwise through all 6 directions.
+# The pointed-at neighbor doesn't have to be a road — if it isn't, the extractor
+# simply idles until a road is built there. Always succeeds for any placed extractor.
+func rotate_extractor(hex_pos: Vector2i) -> bool:
+	if placed_cells.get(hex_pos, CellType.NONE) != CellType.EXTRACTOR:
+		return false
+
+	# All 6 neighbors as candidates (in fixed clockwise order = HEX_DIRECTIONS order)
+	var candidates: Array[Vector2i] = []
+	for dir in HEX_DIRECTIONS:
+		candidates.append(hex_pos + dir)
+
+	# Find current pointed direction (outlet override, or BFS parent, or default to index 0)
+	var current: Vector2i = extractor_outlet.get(hex_pos, nerve_parent.get(hex_pos, Vector2i(-9999, -9999)))
+	var idx := candidates.find(current)
+	var next_idx := (idx + 1) % candidates.size()
+	extractor_outlet[hex_pos] = candidates[next_idx]
+
+	# Flush in-flight packets from this extractor (stale route)
+	packets = packets.filter(func(p): return p.from != hex_pos)
+
+	# Rebuild nerve so nerve_parent[hex_pos] reflects new outlet
+	nerve_parent.erase(hex_pos)
+	_rebuild_nerves()
+	extractor_rotated.emit(hex_pos)
+	return true
+
 # ============================================================
 # === PLACEMENT ===
 func can_place_cell(hex_pos: Vector2i, type: CellType) -> bool:
@@ -206,6 +235,7 @@ func remove_cell(hex_pos: Vector2i) -> bool:
 		return false
 	placed_cells.erase(hex_pos)
 	extractor_timers.erase(hex_pos)
+	extractor_outlet.erase(hex_pos)
 	nerve_parent.erase(hex_pos)
 	packets = packets.filter(func(p): return p.from != hex_pos and p.to != hex_pos)
 	_rebuild_nerves()
@@ -274,16 +304,26 @@ func _rebuild_nerves() -> void:
 
 			# Extractors are dead-ends — they get a parent (their one outlet)
 			# but they can never BE a parent for anyone else.
-			# So: assign nb's parent = current, but don't expand from extractors.
 			if not nerve_parent.has(nb):
-				# Only assign if current is not an extractor
-				# (extractor can't be a relay/parent)
 				if placed_cells.get(current, CellType.NONE) != CellType.EXTRACTOR:
-					nerve_parent[nb] = current
+					nerve_parent[nb] = current  # BFS default
 
 			# Don't BFS through extractors — they're leaves
 			if placed_cells.get(nb, CellType.NONE) != CellType.EXTRACTOR:
 				queue.append(nb)
+
+	# Post-BFS: apply extractor outlet overrides.
+	# An override always wins — even if it points at a non-road neighbor (extractor idles).
+	# Only assign nerve_parent if the override target is a valid relay (GROWTH or BASE).
+	for ext_pos in extractor_outlet:
+		if placed_cells.get(ext_pos, CellType.NONE) != CellType.EXTRACTOR:
+			continue
+		var target: Vector2i = extractor_outlet[ext_pos]
+		var target_type: int = placed_cells.get(target, CellType.NONE)
+		if target_type == CellType.GROWTH or target_type == CellType.BASE:
+			nerve_parent[ext_pos] = target  # override BFS assignment
+		else:
+			nerve_parent.erase(ext_pos)  # points at non-road — extractor idles
 
 	# Rebuild rendering list from nerve_parent
 	nerve_connections.clear()
@@ -448,7 +488,6 @@ func advance_packets(delta: float) -> void:
 			var next_hop: Vector2i = nerve_parent[to_pos]
 			if _belt_accepts_entry(to_pos, next_hop, remaining):
 				var forwarded := _make_packet(to_pos, next_hop, packet.resource)
-				forwarded.debug_color = packet.debug_color
 				remaining.append(forwarded)
 			else:
 				# Next belt full — wait

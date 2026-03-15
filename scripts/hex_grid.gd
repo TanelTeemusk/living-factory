@@ -59,6 +59,7 @@ func _ready() -> void:
 	GameState.nerves_updated.connect(func(): queue_redraw())
 	GameState.packets_updated.connect(func(): queue_redraw())
 	GameState.hex_selection_changed.connect(func(_h): queue_redraw())
+	GameState.extractor_rotated.connect(func(_h): queue_redraw())
 
 func _process(delta: float) -> void:
 	pulse_time += delta
@@ -177,20 +178,62 @@ func _draw_placed_cells() -> void:
 			var text_pos := raised_center + Vector2(-text_size.x / 2.0, text_size.y / 4.0)
 			draw_string(font, text_pos, label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, Color.WHITE)
 
+		# Outlet arrow for extractors — always visible, even when pointing at non-road.
+		# Priority: player override > BFS parent. Dim color when pointing at a non-road.
+		if cell_type == GameState.CellType.EXTRACTOR:
+			var outlet_pos: Vector2i
+			var active: bool  # true = connected to a road/base
+			if GameState.extractor_outlet.has(cell_pos):
+				outlet_pos = GameState.extractor_outlet[cell_pos]
+				active = GameState.nerve_parent.has(cell_pos)  # post-BFS assigned = valid road
+			elif GameState.nerve_parent.has(cell_pos):
+				outlet_pos = GameState.nerve_parent[cell_pos]
+				active = true
+			else:
+				outlet_pos = cell_pos  # no direction known yet, skip
+			if outlet_pos != cell_pos:
+				var outlet_pixel := GameState.hex_to_pixel(outlet_pos)
+				var arrow_dir  := (outlet_pixel - raised_center).normalized()
+				var arrow_start := raised_center + arrow_dir * (HEX_SIZE * 0.25)
+				var arrow_tip   := raised_center + arrow_dir * (HEX_SIZE * 0.72)
+				var arrow_color := Color(1.0, 0.9, 0.3, 0.9) if active else Color(0.7, 0.5, 0.2, 0.55)
+				var perp := Vector2(-arrow_dir.y, arrow_dir.x)
+				var head_size := 5.0
+				draw_line(arrow_start, arrow_tip, arrow_color, 2.0)
+				draw_line(arrow_tip, arrow_tip - arrow_dir * head_size + perp * head_size * 0.6, arrow_color, 2.0)
+				draw_line(arrow_tip, arrow_tip - arrow_dir * head_size - perp * head_size * 0.6, arrow_color, 2.0)
+
 # === GROWTH NODE (road junction — nerves draw the lines, nothing extra needed) ===
 func _draw_growth_node(_cell_pos: Vector2i) -> void:
 	pass  # Growth nodes are purely visual through nerve connections
 
 # === NERVE CONNECTIONS ===
 func _draw_nerve_connections() -> void:
-	const NERVE_COLOR := Color(0.45, 0.55, 0.5, 0.6)
+	const NERVE_COLOR  := Color(0.45, 0.55, 0.5, 0.6)
+	const ARROW_COLOR  := Color(0.55, 0.75, 0.65, 0.75)
+	const ARROW_SIZE   := 5.0   # half-length of each arrowhead wing
+	const ARROW_OFFSET := 0.62  # how far along the segment (0=from, 1=to) to place the arrow
 
 	for connection in GameState.nerve_connections:
 		var from_pos: Vector2i = connection[0]
-		var to_pos: Vector2i = connection[1]
+		var to_pos:   Vector2i = connection[1]
 		var from_pixel := GameState.hex_to_pixel(from_pos)
 		var to_pixel   := GameState.hex_to_pixel(to_pos)
 		draw_line(from_pixel, to_pixel, NERVE_COLOR, NERVE_LINE_WIDTH)
+
+		# Skip arrow on extractor→road segments (extractor already has its own outlet arrow)
+		var from_type: int = GameState.placed_cells.get(from_pos, GameState.CellType.NONE)
+		if from_type == GameState.CellType.EXTRACTOR:
+			continue
+
+		# Tiny mid-segment arrowhead pointing from→to (toward base)
+		var dir := (to_pixel - from_pixel).normalized()
+		var perp := Vector2(-dir.y, dir.x)
+		var tip := from_pixel.lerp(to_pixel, ARROW_OFFSET)
+		var base_l := tip - dir * ARROW_SIZE + perp * ARROW_SIZE * 0.55
+		var base_r := tip - dir * ARROW_SIZE - perp * ARROW_SIZE * 0.55
+		draw_line(tip, base_l, ARROW_COLOR, 1.5)
+		draw_line(tip, base_r, ARROW_COLOR, 1.5)
 
 # === PACKETS ===
 func _draw_packets() -> void:
@@ -198,7 +241,7 @@ func _draw_packets() -> void:
 		var from_pixel := GameState.hex_to_pixel(packet.from)
 		var to_pixel   := GameState.hex_to_pixel(packet.to)
 		var pos := from_pixel.lerp(to_pixel, packet.progress)
-		var color: Color = packet.get("debug_color", GameState.resource_colors.get(packet.resource, Color.WHITE))
+		var color: Color = GameState.resource_colors.get(packet.resource, Color.WHITE)
 
 		# Outer glow
 		var glow := color

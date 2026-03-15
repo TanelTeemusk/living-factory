@@ -69,6 +69,7 @@ func _ready() -> void:
 	GameState.hex_selection_changed.connect(_on_hex_selection_changed)
 	GameState.cell_placed.connect(func(_a, _b): _refresh())
 	GameState.cell_removed.connect(func(_a): _refresh())
+	GameState.extractor_rotated.connect(func(_h): _refresh())
 
 func _process(delta: float) -> void:
 	if absf(_current_y - _target_y) > 0.5:
@@ -127,9 +128,14 @@ func _rebuild_panel(hex_pos: Vector2i) -> void:
 		if not can_extractor and not can_growth:
 			_subtitle_label.text += "\nCan't build here — place adjacent to existing cells."
 	else:
-		# There's a cell — offer demolish (not on base)
+		# There's a cell — context buttons
+		if cell_type == GameState.CellType.EXTRACTOR:
+			_add_button("↻", Color(0.2, 0.4, 0.55), func():
+				GameState.rotate_extractor(hex_pos)
+			)
+
 		if cell_type != GameState.CellType.BASE:
-			_add_button("Demolish", Color(0.55, 0.15, 0.15), func():
+			_add_button("🗑", Color(0.55, 0.15, 0.15), func():
 				GameState.remove_cell(hex_pos)
 				GameState.deselect_hex()
 			)
@@ -137,7 +143,9 @@ func _rebuild_panel(hex_pos: Vector2i) -> void:
 func _add_button(label: String, bg: Color, callback: Callable) -> void:
 	var btn := Button.new()
 	btn.text = label
-	btn.custom_minimum_size = Vector2(120, 44)
+	# Single-char icon buttons are square; longer labels get a wider minimum
+	var is_icon := label.length() <= 2
+	btn.custom_minimum_size = Vector2(52, 52) if is_icon else Vector2(120, 44)
 
 	var sb_normal := StyleBoxFlat.new()
 	sb_normal.bg_color = bg
@@ -155,7 +163,7 @@ func _add_button(label: String, bg: Color, callback: Callable) -> void:
 	btn.add_theme_stylebox_override("pressed", sb_pressed)
 
 	btn.add_theme_color_override("font_color", Color.WHITE)
-	btn.add_theme_font_size_override("font_size", 14)
+	btn.add_theme_font_size_override("font_size", 22 if is_icon else 14)
 	btn.pressed.connect(callback)
 	_button_row.add_child(btn)
 
@@ -177,11 +185,12 @@ func _tile_description(tile_type: int, cell_type: int, is_locked: bool) -> Strin
 		GameState.CellType.BASE:
 			return "Your central hub. Resources are delivered here."
 		GameState.CellType.EXTRACTOR:
+			var resource_str := "resources"
 			if tile_type == GameState.TileType.SUGAR_FIELD:
-				return "Harvesting sugar from this field."
+				resource_str = "sugar"
 			elif tile_type == GameState.TileType.MINERAL_FIELD:
-				return "Harvesting minerals from this field."
-			return "Extracting resources."
+				resource_str = "minerals"
+			return "Harvesting %s from this field." % resource_str
 		GameState.CellType.GROWTH:
 			return "Road junction — routes items toward the base."
 	# Empty tile
