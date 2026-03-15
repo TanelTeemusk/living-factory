@@ -62,30 +62,16 @@ func _draw() -> void:
 	_draw_nerve_connections()
 	_draw_placed_cells()
 
-func _visible_world_rect() -> Rect2:
-	var vp := get_viewport_rect()
-	var xf := get_canvas_transform().affine_inverse()
-	var tl := xf * vp.position
-	var br := xf * (vp.position + vp.size)
-	var margin := GameState.HEX_SIZE * 2.0
-	return Rect2(tl - Vector2(margin, margin), br - tl + Vector2(margin * 2.0, margin * 2.0))
-
 # === BACKGROUND ===
 func _draw_background() -> void:
-	var wr := _visible_world_rect()
-	draw_rect(wr, BACKGROUND_COLOR)
-	# Stars — only draw ones inside the visible rect
+	draw_rect(Rect2(-4000, -4000, 8000, 8000), BACKGROUND_COLOR)
 	for i in range(stars.size()):
-		if wr.has_point(stars[i]):
-			draw_circle(stars[i], 1.0, Color(1.0, 1.0, 1.0, star_alphas[i]))
+		draw_circle(stars[i], 1.0, Color(1.0, 1.0, 1.0, star_alphas[i]))
 
 # === HEX TILES ===
 func _draw_hex_tiles() -> void:
-	var wr := _visible_world_rect()
 	for tile_pos in GameState.tile_map:
 		var center := GameState.hex_to_pixel(tile_pos)
-		if not wr.has_point(center):
-			continue
 		var tile_type: int = GameState.tile_map[tile_pos]
 		var color: Color = TILE_COLORS.get(tile_type, Color.GRAY)
 		var vertices := _get_hex_vertices(center, HEX_SIZE)
@@ -125,14 +111,11 @@ func _draw_hex_tiles() -> void:
 
 # === PLACED CELLS ===
 func _draw_placed_cells() -> void:
-	var wr := _visible_world_rect()
 	for cell_pos in GameState.placed_cells:
 		var cell_type: int = GameState.placed_cells[cell_pos]
 		if cell_type == GameState.CellType.NONE:
 			continue
 		var center := GameState.hex_to_pixel(cell_pos)
-		if not wr.has_point(center):
-			continue
 
 		if cell_type == GameState.CellType.GROWTH:
 			_draw_growth_node(cell_pos)
