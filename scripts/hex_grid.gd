@@ -21,8 +21,8 @@ const NERVE_LINE_ALPHA: float = 0.7
 const GHOST_CELL_ALPHA: float = 0.4
 const HOVER_OVERLAY_ALPHA: float = 0.5
 
-# UI bounds (don't consume input if in bottom 120px)
-const UI_SAFE_MARGIN: float = 120.0
+# UI bounds (don't consume input if in bottom panel area)
+const UI_SAFE_MARGIN: float = 170.0
 
 # Star background — spread across world space, not viewport
 var stars: Array[Vector2] = []
@@ -58,6 +58,7 @@ func _ready() -> void:
 	GameState.tiles_unlocked.connect(func(_a): queue_redraw())
 	GameState.nerves_updated.connect(func(): queue_redraw())
 	GameState.packets_updated.connect(func(): queue_redraw())
+	GameState.hex_selection_changed.connect(func(_h): queue_redraw())
 
 func _process(delta: float) -> void:
 	pulse_time += delta
@@ -69,6 +70,7 @@ func _draw() -> void:
 	_draw_nerve_connections()
 	_draw_placed_cells()
 	_draw_packets()
+	_draw_selected_hex()
 	_draw_hover()
 
 # === BACKGROUND ===
@@ -211,6 +213,20 @@ func _edge_key(a: Vector2i, b: Vector2i) -> String:
 		return "%d,%d>%d,%d" % [a.x, a.y, b.x, b.y]
 	return "%d,%d>%d,%d" % [b.x, b.y, a.x, a.y]
 
+# === SELECTED HEX HIGHLIGHT ===
+func _draw_selected_hex() -> void:
+	var hex := GameState.selected_hex
+	if hex == GameState.NO_HEX:
+		return
+	if not GameState.tile_map.has(hex):
+		return
+	var center := GameState.hex_to_pixel(hex)
+	var verts := _get_hex_vertices(center, HEX_SIZE + 3.0)
+	# Animated pulse using pulse_time
+	var alpha := 0.5 + 0.25 * sin(pulse_time * PULSE_SPEED)
+	for i in range(6):
+		draw_line(verts[i], verts[(i + 1) % 6], Color(1.0, 0.85, 0.3, alpha), 2.5)
+
 # === HOVER GHOST ===
 func _draw_hover() -> void:
 	var hovered_hex := GameState.pixel_to_hex(get_global_mouse_position())
@@ -249,11 +265,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			# Check UI safe zone
 			var viewport_size := get_viewport_rect().size
-			if mb.position.y > viewport_size.y - UI_SAFE_MARGIN:
+			# Block taps inside open bottom sheet
+			var panel_open := GameState.selected_hex != GameState.NO_HEX
+			var safe := UI_SAFE_MARGIN if panel_open else 4.0
+			if mb.position.y > viewport_size.y - safe:
 				return
-			# Convert screen position to world coords via canvas transform
 			var world_pos := get_canvas_transform().affine_inverse() * mb.position
 			var hex_pos := GameState.pixel_to_hex(world_pos)
 			_handle_hex_click(hex_pos)
@@ -265,7 +282,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		var st := event as InputEventScreenTouch
 		if st.pressed and st.index == 0:
 			var viewport_size := get_viewport_rect().size
-			if st.position.y > viewport_size.y - UI_SAFE_MARGIN:
+			var panel_open := GameState.selected_hex != GameState.NO_HEX
+			var safe := UI_SAFE_MARGIN if panel_open else 4.0
+			if st.position.y > viewport_size.y - safe:
 				return
 			var world_pos := get_canvas_transform().affine_inverse() * st.position
 			var hex_pos := GameState.pixel_to_hex(world_pos)
@@ -274,12 +293,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _handle_hex_click(hex_pos: Vector2i) -> void:
 	if not GameState.tile_map.has(hex_pos):
+		# Tapped outside — deselect
+		GameState.deselect_hex()
 		return
-	if GameState.demolish_mode:
-		if GameState.placed_cells.has(hex_pos):
-			GameState.remove_cell(hex_pos)
-	elif GameState.selected_cell != GameState.CellType.NONE:
-		GameState.place_cell(hex_pos, GameState.selected_cell)
+	GameState.select_hex(hex_pos)
 
 # === HEX GEOMETRY ===
 func _get_hex_vertices(center: Vector2, size: float) -> Array[Vector2]:

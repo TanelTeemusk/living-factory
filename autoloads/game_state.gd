@@ -29,7 +29,7 @@ var resource_colors: Dictionary = {
 # === CONSTANTS ===
 const EXTRACT_INTERVAL: float = 1.5   # seconds between extractor producing one item
 const PACKET_TRAVEL_TIME: float = 0.8 # seconds to cross one segment
-const MIN_ITEM_GAP: float = 0.5       # minimum progress gap — limits belt to ~2 items max
+const MIN_ITEM_GAP: float = 0.25      # minimum progress gap — allows ~4 items per segment
 
 # === GLOBAL RESOURCE TOTALS ===
 var total_sugar: float = 0.0
@@ -65,8 +65,10 @@ func _make_packet(from: Vector2i, to: Vector2i, resource: int) -> Dictionary:
 	}
 
 # === UI STATE ===
-var selected_cell: CellType = CellType.NONE
-var demolish_mode: bool = false
+var selected_cell: CellType = CellType.NONE  # kept for ghost rendering compat
+var demolish_mode: bool = false               # kept for ghost rendering compat
+var selected_hex: Vector2i = Vector2i(-999, -999)  # currently tapped hex (sentinel = none)
+const NO_HEX: Vector2i = Vector2i(-999, -999)
 
 # === HEX CONSTANTS ===
 const HEX_SIZE: float = 32.0
@@ -80,6 +82,7 @@ signal cell_placed(hex_pos: Vector2i, cell_type: CellType)
 signal cell_removed(hex_pos: Vector2i)
 signal selection_changed(cell_type: CellType)
 signal demolish_toggled(active: bool)
+signal hex_selection_changed(hex_pos: Vector2i)  # fired when tapped hex changes
 signal resources_updated()
 signal health_changed(new_health: float)
 signal tiles_unlocked(positions: Array)
@@ -147,6 +150,23 @@ func clear_selection() -> void:
 	demolish_mode = false
 	selection_changed.emit(CellType.NONE)
 	demolish_toggled.emit(false)
+
+# Tap-to-select hex (Polytopia style)
+func select_hex(hex_pos: Vector2i) -> void:
+	if selected_hex == hex_pos:
+		deselect_hex()
+		return
+	selected_hex = hex_pos
+	# Clear any old build-mode state so ghost doesn't show
+	selected_cell = CellType.NONE
+	demolish_mode = false
+	hex_selection_changed.emit(hex_pos)
+
+func deselect_hex() -> void:
+	selected_hex = NO_HEX
+	selected_cell = CellType.NONE
+	demolish_mode = false
+	hex_selection_changed.emit(NO_HEX)
 
 # ============================================================
 # === PLACEMENT ===

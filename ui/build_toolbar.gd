@@ -1,116 +1,193 @@
 extends PanelContainer
+## Polytopia-style hex-info bottom sheet.
+## Hidden until the player taps a hex; slides up with tile info + context actions.
 
-var buttons: Dictionary = {}
-var active_cell_type: GameState.CellType = GameState.CellType.NONE
+# ── Layout ──────────────────────────────────────────────────────────────────
+const PANEL_HEIGHT: float = 160.0
+const SLIDE_SPEED:  float = 800.0   # px / sec
+
+var _target_y: float = 0.0   # 0 = fully visible, PANEL_HEIGHT = hidden
+var _current_y: float = 0.0  # offset from the bottom anchor
+
+# ── Child refs (built in _ready) ────────────────────────────────────────────
+var _title_label:    Label
+var _subtitle_label: Label
+var _button_row:     HBoxContainer
 
 func _ready() -> void:
-	# Setup panel background
-	var panel_stylebox = StyleBoxFlat.new()
-	panel_stylebox.bg_color = Color(0.1, 0.1, 0.15, 0.8)
-	panel_stylebox.set_corner_radius_all(4)
-	add_theme_stylebox_override("panel", panel_stylebox)
+	# ── Panel style ──────────────────────────────────────────────────────────
+	custom_minimum_size = Vector2(0, PANEL_HEIGHT)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.08, 0.09, 0.13, 0.96)
+	sb.set_corner_radius_all(0)
+	sb.corner_radius_top_left  = 16
+	sb.corner_radius_top_right = 16
+	add_theme_stylebox_override("panel", sb)
 
-	# Create HBoxContainer for buttons
-	var hbox = HBoxContainer.new()
-	hbox.add_theme_constant_override("separation", 8)
-	add_child(hbox)
+	# ── Anchor: bottom full-width ────────────────────────────────────────────
+	set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	offset_top    = -PANEL_HEIGHT
+	offset_bottom = 0.0
+	offset_left   = 0.0
+	offset_right  = 0.0
 
-	# Create building buttons
-	_create_building_button(hbox, GameState.CellType.EXTRACTOR, "Extractor")
-	_create_building_button(hbox, GameState.CellType.GROWTH, "Growth")
+	# ── Inner layout ─────────────────────────────────────────────────────────
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	# Add separator
-	var separator = VSeparator.new()
-	hbox.add_child(separator)
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left",   20)
+	margin.add_theme_constant_override("margin_right",  20)
+	margin.add_theme_constant_override("margin_top",    16)
+	margin.add_theme_constant_override("margin_bottom", 16)
+	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	margin.add_child(vbox)
+	add_child(margin)
 
-	# Add demolish button (special styling)
-	_create_demolish_button(hbox)
+	_title_label = Label.new()
+	_title_label.add_theme_font_size_override("font_size", 18)
+	_title_label.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+	vbox.add_child(_title_label)
 
-	# Add separator
-	separator = VSeparator.new()
-	hbox.add_child(separator)
+	_subtitle_label = Label.new()
+	_subtitle_label.add_theme_font_size_override("font_size", 13)
+	_subtitle_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.7))
+	_subtitle_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	vbox.add_child(_subtitle_label)
 
-	# Add cancel/deselect button
-	_create_cancel_button(hbox)
+	_button_row = HBoxContainer.new()
+	_button_row.add_theme_constant_override("separation", 10)
+	vbox.add_child(_button_row)
 
-	# Connect signals
-	GameState.selection_changed.connect(_on_selection_changed)
-	GameState.demolish_toggled.connect(_on_demolish_toggled)
+	# ── Start hidden (slid off bottom) ───────────────────────────────────────
+	_current_y = PANEL_HEIGHT
+	_target_y  = PANEL_HEIGHT
+	_apply_offset()
 
-func _create_building_button(parent: HBoxContainer, cell_type: GameState.CellType, name: String) -> void:
-	var button = Button.new()
-	button.text = name
-	button.custom_minimum_size = Vector2(100, 40)
+	# ── Signals ──────────────────────────────────────────────────────────────
+	GameState.hex_selection_changed.connect(_on_hex_selection_changed)
+	GameState.cell_placed.connect(func(_a, _b): _refresh())
+	GameState.cell_removed.connect(func(_a): _refresh())
 
-	# TODO: show costs here once economy is re-enabled
+func _process(delta: float) -> void:
+	if absf(_current_y - _target_y) > 0.5:
+		_current_y = move_toward(_current_y, _target_y, SLIDE_SPEED * delta)
+		_apply_offset()
 
-	button.pressed.connect(func() -> void:
-		if GameState.selected_cell == cell_type:
-			GameState.clear_selection()
-		else:
-			GameState.select_cell(cell_type)
-	)
+func _apply_offset() -> void:
+	offset_top    = -PANEL_HEIGHT + _current_y
+	offset_bottom = _current_y
 
-	parent.add_child(button)
-	buttons[cell_type] = button
-	_update_button_style(button, cell_type)
+# ── Hex selection ────────────────────────────────────────────────────────────
+func _on_hex_selection_changed(hex_pos: Vector2i) -> void:
+	if hex_pos == GameState.NO_HEX:
+		_target_y = PANEL_HEIGHT   # slide out
+		return
+	_rebuild_panel(hex_pos)
+	_target_y = 0.0               # slide in
 
-func _create_demolish_button(parent: HBoxContainer) -> void:
-	var button = Button.new()
-	button.text = "Demolish"
-	button.custom_minimum_size = Vector2(100, 40)
-	button.pressed.connect(func() -> void:
-		if GameState.demolish_mode:
-			GameState.clear_selection()
-		else:
-			GameState.toggle_demolish()
-	)
+func _refresh() -> void:
+	if GameState.selected_hex != GameState.NO_HEX:
+		_rebuild_panel(GameState.selected_hex)
 
-	parent.add_child(button)
-	buttons["demolish"] = button
+# ── Panel content ─────────────────────────────────────────────────────────────
+func _rebuild_panel(hex_pos: Vector2i) -> void:
+	# Clear old buttons
+	for child in _button_row.get_children():
+		child.queue_free()
 
-func _create_cancel_button(parent: HBoxContainer) -> void:
-	var button = Button.new()
-	button.text = "Cancel"
-	button.custom_minimum_size = Vector2(80, 40)
-	button.pressed.connect(func() -> void:
-		GameState.clear_selection()
-	)
+	var tile_type:  int = GameState.tile_map.get(hex_pos, -1)
+	var cell_type:  int = GameState.placed_cells.get(hex_pos, GameState.CellType.NONE)
+	var is_locked:  bool = tile_type == GameState.TileType.LOCKED
 
-	parent.add_child(button)
-	buttons["cancel"] = button
+	# ── Title / subtitle ─────────────────────────────────────────────────────
+	_title_label.text    = _tile_name(tile_type, cell_type)
+	_subtitle_label.text = _tile_description(tile_type, cell_type, is_locked)
 
-func _update_button_style(button: Button, cell_type: GameState.CellType) -> void:
-	var is_active = (cell_type == active_cell_type)
+	# ── Action buttons ───────────────────────────────────────────────────────
+	if is_locked:
+		return  # no actions on locked tiles
 
-	if is_active:
-		var highlight_stylebox = StyleBoxFlat.new()
-		highlight_stylebox.bg_color = Color(0.2, 0.2, 0.25, 1.0)
-		highlight_stylebox.set_border_width_all(3)
-		highlight_stylebox.border_color = Color(0.3, 0.8, 1.0)
-		button.add_theme_stylebox_override("normal", highlight_stylebox)
+	var has_cell: bool = cell_type != GameState.CellType.NONE
+
+	if not has_cell:
+		# What can be placed here?
+		var can_extractor: bool = GameState.can_place_cell(hex_pos, GameState.CellType.EXTRACTOR)
+		var can_growth:    bool = GameState.can_place_cell(hex_pos, GameState.CellType.GROWTH)
+
+		if can_extractor:
+			_add_button("Build Extractor", Color(0.25, 0.55, 0.35), func():
+				GameState.place_cell(hex_pos, GameState.CellType.EXTRACTOR)
+			)
+		if can_growth:
+			_add_button("Build Road", Color(0.4, 0.25, 0.55), func():
+				GameState.place_cell(hex_pos, GameState.CellType.GROWTH)
+			)
+		if not can_extractor and not can_growth:
+			_subtitle_label.text += "\nCan't build here — place adjacent to existing cells."
 	else:
-		var normal_stylebox = StyleBoxFlat.new()
-		normal_stylebox.bg_color = Color(0.15, 0.15, 0.2, 0.9)
-		button.add_theme_stylebox_override("normal", normal_stylebox)
+		# There's a cell — offer demolish (not on base)
+		if cell_type != GameState.CellType.BASE:
+			_add_button("Demolish", Color(0.55, 0.15, 0.15), func():
+				GameState.remove_cell(hex_pos)
+				GameState.deselect_hex()
+			)
 
-func _on_selection_changed(cell_type: GameState.CellType) -> void:
-	active_cell_type = cell_type
+func _add_button(label: String, bg: Color, callback: Callable) -> void:
+	var btn := Button.new()
+	btn.text = label
+	btn.custom_minimum_size = Vector2(120, 44)
 
-	for type in [GameState.CellType.EXTRACTOR, GameState.CellType.GROWTH]:
-		if type in buttons:
-			_update_button_style(buttons[type], type)
+	var sb_normal := StyleBoxFlat.new()
+	sb_normal.bg_color = bg
+	sb_normal.set_corner_radius_all(8)
+	btn.add_theme_stylebox_override("normal", sb_normal)
 
-func _on_demolish_toggled(enabled: bool) -> void:
-	if "demolish" in buttons:
-		var demolish_button = buttons["demolish"]
-		if enabled:
-			var highlight_stylebox = StyleBoxFlat.new()
-			highlight_stylebox.bg_color = Color(0.4, 0.15, 0.15, 1.0)
-			highlight_stylebox.set_border_width_all(3)
-			highlight_stylebox.border_color = Color(0.9, 0.3, 0.3)
-			demolish_button.add_theme_stylebox_override("normal", highlight_stylebox)
-		else:
-			var normal_stylebox = StyleBoxFlat.new()
-			normal_stylebox.bg_color = Color(0.15, 0.15, 0.2, 0.9)
-			demolish_button.add_theme_stylebox_override("normal", normal_stylebox)
+	var sb_hover := StyleBoxFlat.new()
+	sb_hover.bg_color = bg.lightened(0.15)
+	sb_hover.set_corner_radius_all(8)
+	btn.add_theme_stylebox_override("hover", sb_hover)
+
+	var sb_pressed := StyleBoxFlat.new()
+	sb_pressed.bg_color = bg.darkened(0.15)
+	sb_pressed.set_corner_radius_all(8)
+	btn.add_theme_stylebox_override("pressed", sb_pressed)
+
+	btn.add_theme_color_override("font_color", Color.WHITE)
+	btn.add_theme_font_size_override("font_size", 14)
+	btn.pressed.connect(callback)
+	_button_row.add_child(btn)
+
+# ── Display helpers ───────────────────────────────────────────────────────────
+func _tile_name(tile_type: int, cell_type: int) -> String:
+	if cell_type != GameState.CellType.NONE:
+		return GameState.cell_names.get(cell_type, "Unknown")
+	match tile_type:
+		GameState.TileType.EMPTY:        return "Empty Hex"
+		GameState.TileType.SUGAR_FIELD:  return "Sugar Field"
+		GameState.TileType.MINERAL_FIELD: return "Mineral Field"
+		GameState.TileType.LOCKED:       return "Locked Territory"
+	return "Unknown"
+
+func _tile_description(tile_type: int, cell_type: int, is_locked: bool) -> String:
+	if is_locked:
+		return "Expand your network to unlock this area."
+	match cell_type:
+		GameState.CellType.BASE:
+			return "Your central hub. Resources are delivered here."
+		GameState.CellType.EXTRACTOR:
+			if tile_type == GameState.TileType.SUGAR_FIELD:
+				return "Harvesting sugar from this field."
+			elif tile_type == GameState.TileType.MINERAL_FIELD:
+				return "Harvesting minerals from this field."
+			return "Extracting resources."
+		GameState.CellType.GROWTH:
+			return "Road junction — routes items toward the base."
+	# Empty tile
+	match tile_type:
+		GameState.TileType.SUGAR_FIELD:
+			return "Rich in sugar. Build an Extractor to harvest it."
+		GameState.TileType.MINERAL_FIELD:
+			return "Mineral deposit. Build an Extractor to harvest it."
+	return "An open hex. Build a Road to expand your network."

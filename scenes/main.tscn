@@ -28,9 +28,4 @@ offset_bottom = 50.0
 script = ExtResource("4")
 
 [node name="BuildToolbar" type="PanelContainer" parent="UILayer"]
-anchors_preset = 12
-anchor_top = 1.0
-anchor_right = 1.0
-anchor_bottom = 1.0
-offset_top = -120.0
 script = ExtResource("5")
