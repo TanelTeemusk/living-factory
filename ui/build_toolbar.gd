@@ -70,6 +70,7 @@ func _ready() -> void:
 	GameState.cell_placed.connect(func(_a, _b): _refresh())
 	GameState.cell_removed.connect(func(_a): _refresh())
 	GameState.extractor_rotated.connect(func(_h): _refresh())
+	GameState.growth_rotated.connect(func(_h): _refresh())
 
 func _process(delta: float) -> void:
 	if absf(_current_y - _target_y) > 0.5:
@@ -133,6 +134,18 @@ func _rebuild_panel(hex_pos: Vector2i) -> void:
 			_add_button("↻", Color(0.2, 0.4, 0.55), func():
 				GameState.rotate_extractor(hex_pos)
 			)
+		if cell_type == GameState.CellType.GROWTH:
+			# Only show rotate if ≥2 valid relay neighbors exist
+			var relay_count := 0
+			for dir in GameState.HEX_DIRECTIONS:
+				var nb := hex_pos + dir
+				var t: int = GameState.placed_cells.get(nb, GameState.CellType.NONE)
+				if t == GameState.CellType.GROWTH or t == GameState.CellType.BASE:
+					relay_count += 1
+			if relay_count >= 2:
+				_add_button("↻", Color(0.2, 0.4, 0.55), func():
+					GameState.rotate_growth(hex_pos)
+				)
 
 		if cell_type != GameState.CellType.BASE:
 			_add_button("🗑", Color(0.55, 0.15, 0.15), func():

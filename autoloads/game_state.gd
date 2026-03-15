@@ -50,7 +50,11 @@ var extractor_timers: Dictionary = {}
 # If an entry exists here it overrides BFS-assigned nerve_parent for that extractor.
 var extractor_outlet: Dictionary = {}
 
+# Road (GROWTH) outlet overrides: Vector2i -> Vector2i
+var growth_outlet: Dictionary = {}
+
 signal extractor_rotated(hex_pos: Vector2i)
+signal growth_rotated(hex_pos: Vector2i)
 
 # === PACKETS ===
 # { from: Vector2i, to: Vector2i, resource: int, progress: float }
@@ -100,7 +104,7 @@ func _init_map() -> void:
 	rng.randomize()
 
 	const UNLOCKED_RADIUS: int = 6
-	const LOCKED_RADIUS: int = 12
+	const LOCKED_RADIUS: int = 36
 	const CLEAR_RADIUS: int = 2
 	const SUGAR_CHANCE: float = 0.18
 	const MINERAL_CHANCE: float = 0.14
@@ -197,6 +201,64 @@ func rotate_extractor(hex_pos: Vector2i) -> bool:
 	extractor_rotated.emit(hex_pos)
 	return true
 
+# Rotate a road's outlet one step through adjacent GROWTH/BASE neighbors.
+# Cycles only through valid relay neighbors (not extractors, not empty).
+# Cycle detection in _rebuild_nerves prevents routing loops.
+func rotate_growth(hex_pos: Vector2i) -> bool:
+	if placed_cells.get(hex_pos, CellType.NONE) != CellType.GROWTH:
+		return false
+
+	# Valid outlet candidates: adjacent GROWTH or BASE nodes only
+	var candidates: Array[Vector2i] = []
+	for dir in HEX_DIRECTIONS:
+		var nb := hex_pos + dir
+		var nb_type: int = placed_cells.get(nb, CellType.NONE)
+		if nb_type == CellType.GROWTH or nb_type == CellType.BASE:
+			candidates.append(nb)
+
+	if candidates.size() < 2:
+		return false  # nothing to rotate to
+
+	var current: Vector2i = growth_outlet.get(hex_pos, nerve_parent.get(hex_pos, Vector2i(-9999, -9999)))
+	var idx := candidates.find(current)
+	var next_idx := (idx + 1) % candidates.size()
+	growth_outlet[hex_pos] = candidates[next_idx]
+
+	# Flush packets on this segment (stale route)
+	packets = packets.filter(func(p): return p.from != hex_pos)
+
+	nerve_parent.erase(hex_pos)
+	_rebuild_nerves()
+	growth_rotated.emit(hex_pos)
+	return true
+
+# Returns the best default outlet neighbor for a freshly placed extractor.
+# Priority: adjacent GROWTH > adjacent BASE > neighbor closest in direction of base.
+# Returns hex_pos itself if nothing sensible found (caller should skip setting outlet).
+func _best_default_outlet(hex_pos: Vector2i) -> Vector2i:
+	# 1. Adjacent road/base
+	for dir in HEX_DIRECTIONS:
+		var nb := hex_pos + dir
+		var t: int = placed_cells.get(nb, CellType.NONE)
+		if t == CellType.GROWTH or t == CellType.BASE:
+			return nb
+	# 2. No adjacent road — pick the neighbor whose pixel position is closest to base
+	var base_pixel := hex_to_pixel(base_position)
+	var hex_pixel  := hex_to_pixel(hex_pos)
+	var best_nb    := hex_pos
+	var best_dot   := -INF
+	for dir in HEX_DIRECTIONS:
+		var nb := hex_pos + dir
+		var nb_pixel := hex_to_pixel(nb)
+		# Dot product of (nb - hex) with (base - hex): positive = toward base
+		var toward_base := (base_pixel - hex_pixel).normalized()
+		var nb_dir      := (nb_pixel  - hex_pixel).normalized()
+		var d := toward_base.dot(nb_dir)
+		if d > best_dot:
+			best_dot = d
+			best_nb  = nb
+	return best_nb
+
 # ============================================================
 # === PLACEMENT ===
 func can_place_cell(hex_pos: Vector2i, type: CellType) -> bool:
@@ -210,6 +272,10 @@ func can_place_cell(hex_pos: Vector2i, type: CellType) -> bool:
 		var tt: int = tile_map[hex_pos]
 		if tt != TileType.SUGAR_FIELD and tt != TileType.MINERAL_FIELD:
 			return false
+		return true  # any unlocked resource tile, no adjacency required
+	if type == CellType.GROWTH:
+		return true  # any unlocked empty tile, no adjacency required
+	# Other cell types still require adjacency
 	for dir in HEX_DIRECTIONS:
 		if placed_cells.has(hex_pos + dir):
 			return true
@@ -221,6 +287,10 @@ func place_cell(hex_pos: Vector2i, type: CellType) -> bool:
 	placed_cells[hex_pos] = type
 	if type == CellType.EXTRACTOR:
 		extractor_timers[hex_pos] = EXTRACT_INTERVAL
+		# Pre-point outlet toward nearest road/base neighbor, or toward base if none adjacent
+		var best_nb := _best_default_outlet(hex_pos)
+		if best_nb != hex_pos:
+			extractor_outlet[hex_pos] = best_nb
 	_rebuild_nerves()
 	cell_placed.emit(hex_pos, type)
 	resources_updated.emit()
@@ -236,6 +306,7 @@ func remove_cell(hex_pos: Vector2i) -> bool:
 	placed_cells.erase(hex_pos)
 	extractor_timers.erase(hex_pos)
 	extractor_outlet.erase(hex_pos)
+	growth_outlet.erase(hex_pos)
 	nerve_parent.erase(hex_pos)
 	packets = packets.filter(func(p): return p.from != hex_pos and p.to != hex_pos)
 	_rebuild_nerves()
@@ -312,16 +383,41 @@ func _rebuild_nerves() -> void:
 			if placed_cells.get(nb, CellType.NONE) != CellType.EXTRACTOR:
 				queue.append(nb)
 
-	# Post-BFS: apply extractor outlet overrides.
-	# An override always wins — even if it points at a non-road neighbor (extractor idles).
-	# Only assign nerve_parent if the override target is a valid relay (GROWTH or BASE).
+	# Post-BFS: apply growth (road) outlet overrides first, then extractor overrides.
+	# Growth overrides must be applied before extractors so extractor validity check is accurate.
+
+	# -- Growth overrides --
+	for g_pos in growth_outlet:
+		if placed_cells.get(g_pos, CellType.NONE) != CellType.GROWTH:
+			continue
+		var target: Vector2i = growth_outlet[g_pos]
+		var target_type: int = placed_cells.get(target, CellType.NONE)
+		if target_type == CellType.GROWTH or target_type == CellType.BASE:
+			nerve_parent[g_pos] = target
+		else:
+			nerve_parent.erase(g_pos)  # points at non-road — road becomes a dead end
+
+	# Cycle-break: walk nerve_parent chains; if any road loops back to itself, erase its parent
+	for start in nerve_parent.keys():
+		if placed_cells.get(start, CellType.NONE) != CellType.GROWTH:
+			continue
+		var visited_walk: Dictionary = {}
+		var cur: Vector2i = start
+		while nerve_parent.has(cur):
+			if visited_walk.has(cur):
+				nerve_parent.erase(start)  # break the cycle at the rotated node
+				break
+			visited_walk[cur] = true
+			cur = nerve_parent[cur]
+
+	# -- Extractor overrides --
 	for ext_pos in extractor_outlet:
 		if placed_cells.get(ext_pos, CellType.NONE) != CellType.EXTRACTOR:
 			continue
 		var target: Vector2i = extractor_outlet[ext_pos]
 		var target_type: int = placed_cells.get(target, CellType.NONE)
 		if target_type == CellType.GROWTH or target_type == CellType.BASE:
-			nerve_parent[ext_pos] = target  # override BFS assignment
+			nerve_parent[ext_pos] = target
 		else:
 			nerve_parent.erase(ext_pos)  # points at non-road — extractor idles
 

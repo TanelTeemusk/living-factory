@@ -3,7 +3,7 @@ extends Camera2D
 const ZOOM_MIN = 0.3
 const ZOOM_MAX = 3.0
 const ZOOM_SMOOTHING = 10.0
-const PAN_LIMIT = 2000.0
+const PAN_LIMIT = 4000.0
 const UI_EXCLUSION_HEIGHT = 120
 
 var touches: Dictionary = {}
@@ -11,6 +11,12 @@ var target_zoom: float = 1.0
 var is_panning: bool = false
 var middle_button_pressed: bool = false
 var last_drag_position: Vector2 = Vector2.ZERO
+
+# Left-mouse drag panning (desktop)
+const DRAG_THRESHOLD: float = 6.0  # pixels before a press becomes a drag
+var _lmb_down: bool = false
+var _lmb_start: Vector2 = Vector2.ZERO
+var _lmb_dragging: bool = false  # true once threshold crossed
 
 func _ready() -> void:
 	global_position = Vector2.ZERO
@@ -51,7 +57,7 @@ func _input(event: InputEvent) -> void:
 				clamp_position()
 				get_tree().root.set_input_as_handled()
 
-	# Mouse wheel zoom (desktop testing)
+	# Mouse wheel zoom / middle-click drag / left-click drag (desktop)
 	elif event is InputEventMouseButton:
 		var mouse_event = event as InputEventMouseButton
 
@@ -67,15 +73,38 @@ func _input(event: InputEvent) -> void:
 				last_drag_position = mouse_event.position
 			else:
 				middle_button_pressed = false
+		elif mouse_event.button_index == MOUSE_BUTTON_LEFT:
+			if mouse_event.pressed:
+				_lmb_down = true
+				_lmb_dragging = false
+				_lmb_start = mouse_event.position
+				last_drag_position = mouse_event.position
+			else:
+				_lmb_down = false
+				if _lmb_dragging:
+					# Swallow the release so hex_grid doesn't fire a click
+					_lmb_dragging = false
+					get_tree().root.set_input_as_handled()
 
-	# Mouse middle-click drag (desktop pan testing)
-	elif event is InputEventMouseMotion and middle_button_pressed:
+	# Mouse motion — pan on middle-drag or left-drag
+	elif event is InputEventMouseMotion:
 		var motion_event = event as InputEventMouseMotion
-		var delta_pan = (motion_event.position - last_drag_position) * -1.0 / zoom
-		global_position += delta_pan
-		clamp_position()
-		last_drag_position = motion_event.position
-		get_tree().root.set_input_as_handled()
+		if middle_button_pressed:
+			var delta_pan = (motion_event.position - last_drag_position) * -1.0 / zoom
+			global_position += delta_pan
+			clamp_position()
+			last_drag_position = motion_event.position
+			get_tree().root.set_input_as_handled()
+		elif _lmb_down:
+			if not _lmb_dragging:
+				if motion_event.position.distance_to(_lmb_start) >= DRAG_THRESHOLD:
+					_lmb_dragging = true
+			if _lmb_dragging:
+				var delta_pan = (motion_event.position - last_drag_position) * -1.0 / zoom
+				global_position += delta_pan
+				clamp_position()
+				last_drag_position = motion_event.position
+				get_tree().root.set_input_as_handled()
 
 func _process(delta: float) -> void:
 	# Handle pinch zoom

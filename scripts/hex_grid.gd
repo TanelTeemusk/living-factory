@@ -13,7 +13,7 @@ var TILE_COLORS: Dictionary = {}
 
 const TILE_OUTLINE_COLOR: Color = Color(1.0, 1.0, 1.0, 0.15)
 const BACKGROUND_COLOR: Color = Color(0.04, 0.04, 0.06)
-const STAR_COUNT: int = 80
+const STAR_COUNT: int = 200
 
 # Rendering properties
 const NERVE_LINE_WIDTH: float = 2.0
@@ -46,8 +46,8 @@ func _ready() -> void:
 	rng.seed = 42
 	for i in range(STAR_COUNT):
 		var pos := Vector2(
-			rng.randf_range(-1800, 1800),
-			rng.randf_range(-1800, 1800)
+			rng.randf_range(-3600, 3600),
+			rng.randf_range(-3600, 3600)
 		)
 		stars.append(pos)
 		star_alphas.append(rng.randf_range(0.15, 0.5))
@@ -60,6 +60,7 @@ func _ready() -> void:
 	GameState.packets_updated.connect(func(): queue_redraw())
 	GameState.hex_selection_changed.connect(func(_h): queue_redraw())
 	GameState.extractor_rotated.connect(func(_h): queue_redraw())
+	GameState.growth_rotated.connect(func(_h): queue_redraw())
 
 func _process(delta: float) -> void:
 	pulse_time += delta
@@ -203,9 +204,34 @@ func _draw_placed_cells() -> void:
 				draw_line(arrow_tip, arrow_tip - arrow_dir * head_size + perp * head_size * 0.6, arrow_color, 2.0)
 				draw_line(arrow_tip, arrow_tip - arrow_dir * head_size - perp * head_size * 0.6, arrow_color, 2.0)
 
-# === GROWTH NODE (road junction — nerves draw the lines, nothing extra needed) ===
-func _draw_growth_node(_cell_pos: Vector2i) -> void:
-	pass  # Growth nodes are purely visual through nerve connections
+# === GROWTH NODE ===
+func _draw_growth_node(cell_pos: Vector2i) -> void:
+	# Always draw an outlet arrow — same priority as extractor:
+	# 1. player override (growth_outlet), 2. BFS parent (nerve_parent), 3. best default toward base
+	var outlet_pos: Vector2i
+	var active: bool  # true = connected and actually routing
+	if GameState.growth_outlet.has(cell_pos):
+		outlet_pos = GameState.growth_outlet[cell_pos]
+		active = GameState.nerve_parent.has(cell_pos)
+	elif GameState.nerve_parent.has(cell_pos):
+		outlet_pos = GameState.nerve_parent[cell_pos]
+		active = true
+	else:
+		outlet_pos = GameState._best_default_outlet(cell_pos)
+		active = false
+
+	var center := GameState.hex_to_pixel(cell_pos)
+	var outlet_pixel := GameState.hex_to_pixel(outlet_pos)
+	var arrow_dir  := (outlet_pixel - center).normalized()
+	var arrow_start := center + arrow_dir * (HEX_SIZE * 0.15)
+	var arrow_tip   := center + arrow_dir * (HEX_SIZE * 0.62)
+	# Bright teal when active, dim muted teal when disconnected/idle
+	var arrow_color := Color(0.55, 0.85, 0.7, 0.85) if active else Color(0.35, 0.55, 0.5, 0.45)
+	var perp := Vector2(-arrow_dir.y, arrow_dir.x)
+	var head_size := 5.0
+	draw_line(arrow_start, arrow_tip, arrow_color, 2.0)
+	draw_line(arrow_tip, arrow_tip - arrow_dir * head_size + perp * head_size * 0.6, arrow_color, 2.0)
+	draw_line(arrow_tip, arrow_tip - arrow_dir * head_size - perp * head_size * 0.6, arrow_color, 2.0)
 
 # === NERVE CONNECTIONS ===
 func _draw_nerve_connections() -> void:
